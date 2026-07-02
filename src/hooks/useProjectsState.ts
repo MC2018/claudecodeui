@@ -41,6 +41,18 @@ type SessionUpsertedEvent = ServerEvent & {
   } | null;
 };
 
+/**
+ * Per-session deletion delta broadcast by the backend file watcher
+ * (`kind: session_deleted`) when a transcript file is removed on disk,
+ * e.g. after deleting the session from the Claude Code CLI.
+ */
+type SessionDeletedEvent = ServerEvent & {
+  sessionId: string;
+  provider: LLMProvider;
+  projectId: string | null;
+  projectPath: string | null;
+};
+
 type FetchProjectsOptions = {
   showLoadingState?: boolean;
 };
@@ -595,6 +607,27 @@ export function useProjectsState({
           }, 500);
         }
 
+        return;
+      }
+
+      if (event.kind === 'session_deleted') {
+        const deletion = event as SessionDeletedEvent;
+        if (!deletion.sessionId) {
+          return;
+        }
+
+        setProjects((previousProjects) =>
+          previousProjects.map((project) => removeSessionFromProject(project, deletion.sessionId)),
+        );
+        setSelectedProject((previousProject) =>
+          previousProject ? removeSessionFromProject(previousProject, deletion.sessionId) : previousProject,
+        );
+
+        // The open session was deleted externally: leave the dead chat view.
+        if (selectedSessionRef.current?.id === deletion.sessionId) {
+          setSelectedSession(null);
+          navigate('/');
+        }
         return;
       }
 

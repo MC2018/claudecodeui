@@ -294,6 +294,46 @@ export const sessionsDb = {
     return normalizeSessionRow(row) ?? null;
   },
 
+  /**
+   * Resolves one session row through its transcript path on disk.
+   *
+   * The filesystem watcher uses this to translate `unlink` events back to the
+   * owning session row so external deletions (e.g. from the Claude Code CLI)
+   * can be mirrored into the database.
+   */
+  getSessionByJsonlPath(jsonlPath: string): SessionRow | null {
+    const db = getConnection();
+    const row = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE jsonl_path = ?
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(jsonlPath) as SessionRow | undefined;
+
+    return normalizeSessionRow(row) ?? null;
+  },
+
+  /**
+   * Returns every session row that claims a transcript file on disk,
+   * including archived ones, so startup reconciliation can prune rows whose
+   * transcript was deleted while the server was not running.
+   */
+  getSessionsWithJsonlPath(): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE jsonl_path IS NOT NULL`
+      )
+      .all() as SessionRow[];
+
+    return normalizeSessionRows(rows);
+  },
+
   getAllSessions(): SessionRow[] {
     const db = getConnection();
     const rows = db

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
@@ -46,6 +47,31 @@ async function removeFileIfExists(filePath: string): Promise<boolean> {
     }
     throw error;
   }
+}
+
+/**
+ * Derives the expected Claude transcript path for a session row whose
+ * `jsonl_path` was never indexed (app-created sessions start with a NULL
+ * path). Claude Code stores transcripts under
+ * `~/.claude/projects/<encoded-cwd>/<provider-session-id>.jsonl`, where the
+ * cwd is encoded by replacing every non-alphanumeric character with '-'.
+ * Without this fallback, force-deleting such a session silently leaves the
+ * transcript on disk, so it stays visible in Claude Code and gets re-indexed
+ * on the next sync.
+ */
+function deriveClaudeTranscriptPath(session: {
+  provider: string;
+  project_path: string | null;
+  provider_session_id: string | null;
+  session_id: string;
+}): string | null {
+  if (session.provider !== 'claude' || !session.project_path) {
+    return null;
+  }
+
+  const encodedCwd = session.project_path.replace(/[^a-zA-Z0-9]/g, '-');
+  const transcriptId = session.provider_session_id ?? session.session_id;
+  return path.join(os.homedir(), '.claude', 'projects', encodedCwd, `${transcriptId}.jsonl`);
 }
 
 /**
@@ -255,8 +281,11 @@ export const sessionsService = {
     }
 
     let removedFromDisk = false;
-    if (options.deletedFromDisk && session.jsonl_path) {
-      removedFromDisk = await removeFileIfExists(session.jsonl_path);
+    if (options.deletedFromDisk) {
+      const transcriptPath = session.jsonl_path ?? deriveClaudeTranscriptPath(session);
+      if (transcriptPath) {
+        removedFromDisk = await removeFileIfExists(transcriptPath);
+      }
     }
 
     const deleted = sessionsDb.deleteSessionById(sessionId);

@@ -10,7 +10,7 @@ import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 
-type WatcherEventType = 'add' | 'change';
+type WatcherEventType = 'add' | 'change' | 'unlink';
 
 const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> = [
   {
@@ -65,6 +65,12 @@ type PendingWatcherUpdate = {
    * transcript file names on disk only ever contain provider ids.
    */
   updatedSessionIds: Set<string>;
+  /**
+   * Transcript files reported deleted by the watcher. Resolution to session
+   * rows happens at flush time, after re-checking the file is still gone, so
+   * editors that replace a file via unlink+add never tear down a live row.
+   */
+  removedFiles: Map<string, LLMProvider>;
 };
 
 let pendingWatcherUpdate: PendingWatcherUpdate | null = null;
@@ -118,13 +124,15 @@ function schedulePendingWatcherFlush(): void {
 function queuePendingWatcherUpdate(
   eventType: WatcherEventType,
   provider: LLMProvider,
-  updatedSessionId: string | null
+  updatedSessionId: string | null,
+  removedFilePath?: string
 ): void {
   if (!pendingWatcherUpdate) {
     pendingWatcherUpdate = {
       providers: new Set<LLMProvider>(),
       changeTypes: new Set<WatcherEventType>(),
       updatedSessionIds: new Set<string>(),
+      removedFiles: new Map<string, LLMProvider>(),
     };
   }
 
@@ -132,6 +140,9 @@ function queuePendingWatcherUpdate(
   pendingWatcherUpdate.changeTypes.add(eventType);
   if (updatedSessionId) {
     pendingWatcherUpdate.updatedSessionIds.add(updatedSessionId);
+  }
+  if (removedFilePath) {
+    pendingWatcherUpdate.removedFiles.set(removedFilePath, provider);
   }
 
   schedulePendingWatcherFlush();
@@ -181,6 +192,60 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
   });
 }
 
+/**
+ * Mirrors one transcript file deletion into the database.
+ *
+ * Resolves the owning session row (by exact transcript path first, then by
+ * the file name stem, which is the provider-native session id for claude and
+ * cursor transcripts), deletes it, and returns a `session_deleted` event for
+ * connected clients. Returns `null` when the file reappeared (atomic replace)
+ * or no row claims it.
+ */
+async function processRemovedFile(filePath: string): Promise<string | null> {
+  // Re-check existence at flush time: an unlink immediately followed by an
+  // add (file replaced in place) must not delete the session row.
+  try {
+    await fsPromises.access(filePath);
+    return null;
+  } catch {
+    // Still gone — proceed with the deletion.
+  }
+
+  const fileStem = path.basename(filePath, path.extname(filePath));
+  let row = sessionsDb.getSessionByJsonlPath(filePath);
+  if (!row) {
+    // Fall back to the provider-native id in the file name, but only when the
+    // row does not claim a different transcript file elsewhere on disk.
+    const candidate = sessionsDb.getSessionByProviderSessionId(fileStem)
+      ?? sessionsDb.getSessionById(fileStem);
+    if (candidate && (!candidate.jsonl_path || candidate.jsonl_path === filePath)) {
+      row = candidate;
+    }
+  }
+
+  if (!row) {
+    return null;
+  }
+
+  const projectPath = row.project_path;
+  const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+
+  sessionsDb.deleteSessionById(row.session_id);
+  console.log('Session removed after transcript deletion on disk', {
+    sessionId: row.session_id,
+    filePath,
+  });
+
+  return JSON.stringify({
+    kind: 'session_deleted',
+    sessionId: row.session_id,
+    provider: row.provider,
+    projectId: project?.project_id ?? null,
+    projectPath: projectPath ?? null,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 async function flushPendingWatcherUpdate(): Promise<void> {
   clearPendingWatcherFlushTimer();
 
@@ -205,6 +270,13 @@ async function flushPendingWatcherUpdate(): Promise<void> {
     const events: string[] = [];
     for (const updatedSessionId of queuedUpdate.updatedSessionIds) {
       const event = await buildSessionUpsertedEvent(updatedSessionId);
+      if (event) {
+        events.push(event);
+      }
+    }
+
+    for (const [removedFilePath] of queuedUpdate.removedFiles) {
+      const event = await processRemovedFile(removedFilePath);
       if (event) {
         events.push(event);
       }
@@ -266,6 +338,47 @@ async function onUpdate(
 }
 
 /**
+ * Handles transcript file deletions so external session removals (e.g. from
+ * the Claude Code CLI) are mirrored into the database and pushed to clients.
+ */
+function onRemove(filePath: string, provider: LLMProvider): void {
+  if (!isWatcherTargetFile(provider, filePath)) {
+    return;
+  }
+
+  // Subagent transcripts share the parent session's id; their removal must
+  // never tear down the parent session row.
+  if (path.normalize(filePath).split(path.sep).includes('subagents')) {
+    return;
+  }
+
+  queuePendingWatcherUpdate('unlink', provider, null, filePath);
+}
+
+/**
+ * Removes session rows whose transcript file disappeared while the server was
+ * not running, so externally deleted sessions do not linger in the sidebar.
+ */
+async function pruneSessionsWithMissingTranscripts(): Promise<number> {
+  let pruned = 0;
+
+  for (const row of sessionsDb.getSessionsWithJsonlPath()) {
+    if (!row.jsonl_path) {
+      continue;
+    }
+
+    try {
+      await fsPromises.access(row.jsonl_path);
+    } catch {
+      sessionsDb.deleteSessionById(row.session_id);
+      pruned += 1;
+    }
+  }
+
+  return pruned;
+}
+
+/**
  * Starts provider filesystem watchers and performs initial DB synchronization.
  */
 export async function initializeSessionsWatcher(): Promise<void> {
@@ -276,6 +389,16 @@ export async function initializeSessionsWatcher(): Promise<void> {
     processedByProvider: initialSync.processedByProvider,
     failures: initialSync.failures,
   });
+
+  try {
+    const pruned = await pruneSessionsWithMissingTranscripts();
+    if (pruned > 0) {
+      console.log('Pruned sessions whose transcripts were deleted externally', { pruned });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Failed to prune sessions with missing transcripts', { error: message });
+  }
 
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
     try {
@@ -298,6 +421,9 @@ export async function initializeSessionsWatcher(): Promise<void> {
         })
         .on('change', (filePath: string) => {
           void onUpdate('change', filePath, provider);
+        })
+        .on('unlink', (filePath: string) => {
+          onRemove(filePath, provider);
         })
         .on('error', (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
