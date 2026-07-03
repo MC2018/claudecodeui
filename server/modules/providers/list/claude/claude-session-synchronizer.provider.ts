@@ -192,24 +192,25 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     filePath: string,
     nameMap: Map<string, string>
   ): Promise<ParsedSession | null> {
-    const parsed = await extractFirstValidJsonlData(filePath, (rawData) => {
+    // The transcript filename is the session's own id. A resumed session copies
+    // the parent session's message prefix verbatim, so the first content line's
+    // `sessionId` is the PARENT's id, not this file's. Reading the id from there
+    // mis-keys the row (and lets one child transcript clobber the parent row's
+    // jsonl_path) and makes rename entries — which are written with this
+    // session's real id — never match. Deriving the id from the filename is both
+    // correct and matches Claude Code's own naming convention.
+    const sessionId = path.basename(filePath, '.jsonl');
+
+    const projectPath = await extractFirstValidJsonlData(filePath, (rawData) => {
       const data = rawData as Record<string, unknown>;
-      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
-      const projectPath = typeof data.cwd === 'string' ? data.cwd : undefined;
-
-      if (!sessionId || !projectPath) {
-        return null;
-      }
-
-      return {
-        sessionId,
-        projectPath,
-      };
+      return typeof data.cwd === 'string' ? data.cwd : null;
     });
 
-    if (!parsed) {
+    if (!projectPath) {
       return null;
     }
+
+    const parsed: ParsedSession = { sessionId, projectPath };
 
     // An explicit rename in Claude Code always wins, so names stay mirrored
     // even after this app has stored a different one.
