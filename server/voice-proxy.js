@@ -18,6 +18,7 @@ const ENV = {
   sttModel: process.env.VOICE_STT_MODEL || 'whisper-1',
   ttsModel: process.env.VOICE_TTS_MODEL || 'tts-1',
   ttsVoice: process.env.VOICE_TTS_VOICE || 'alloy',
+  ttsSpeed: process.env.VOICE_TTS_SPEED || '',
 };
 
 /**
@@ -37,7 +38,21 @@ function resolveConfig(req) {
     ttsModel: String(h['x-voice-tts-model'] || '') || ENV.ttsModel,
     ttsVoice: String(h['x-voice-tts-voice'] || '') || ENV.ttsVoice,
     ttsFormat: String(h['x-voice-tts-format'] || '').trim(),
+    ttsSpeed: parseTtsSpeed(String(h['x-voice-tts-speed'] || '') || ENV.ttsSpeed),
   };
+}
+
+/**
+ * Parses the playback speed multiplier, constrained to the OpenAI-compatible
+ * 0.25-4.0 range. Returns null when unset or invalid so the backend default
+ * (1.0) applies.
+ * @param {string} value
+ * @returns {number | null}
+ */
+function parseTtsSpeed(value) {
+  const speed = Number(value);
+  if (!value || !Number.isFinite(speed) || speed < 0.25 || speed > 4) return null;
+  return speed;
 }
 
 const router = express.Router();
@@ -206,6 +221,7 @@ router.post('/tts', async (req, res) => {
         voice: cfg.ttsVoice,
         input: text,
         ...(cfg.ttsFormat ? { response_format: cfg.ttsFormat } : {}),
+        ...(cfg.ttsSpeed !== null ? { speed: cfg.ttsSpeed } : {}),
       }),
     });
     if (!r.ok) {
