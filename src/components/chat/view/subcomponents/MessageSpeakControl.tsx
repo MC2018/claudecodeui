@@ -1,14 +1,18 @@
 import { Volume2, Loader2, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
 import { useTts } from '../../hooks/useTts';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
+import { toSpeechText } from '../../../../lib/speechText';
 
 // Tap-to-speak button beside the copy control on assistant messages.
 // Renders nothing unless the optional voice feature is enabled.
 const MessageSpeakControl = ({ content }: { content: string }) => {
   const { t } = useTranslation('chat');
   const available = useVoiceAvailable();
-  const { state, toggle, error } = useTts(() => content);
+  // Speak the prose, not the markup: code blocks, tables, and markdown
+  // syntax are stripped before synthesis.
+  const { state, toggle, error } = useTts(() => toSpeechText(content));
 
   if (!available) return null;
 
