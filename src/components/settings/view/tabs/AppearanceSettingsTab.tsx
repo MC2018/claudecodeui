@@ -1,5 +1,7 @@
 import { useTranslation } from 'react-i18next';
+
 import { DarkModeToggle } from '../../../../shared/view/ui';
+import { useUiPreferences, type ToolCallDisplay } from '../../../../hooks/useUiPreferences';
 import type { CodeEditorSettingsState, ProjectSortOrder } from '../../types/types';
 import LanguageSelector from '../../../../shared/view/ui/LanguageSelector';
 import SettingsCard from '../SettingsCard';
@@ -27,6 +29,7 @@ export default function AppearanceSettingsTab({
   onCodeEditorFontSizeChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
+  const { preferences, setPreference } = useUiPreferences();
 
   return (
     <div className="space-y-8">
@@ -56,10 +59,29 @@ export default function AppearanceSettingsTab({
             <select
               value={projectSortOrder}
               onChange={(event) => onProjectSortOrderChange(event.target.value as ProjectSortOrder)}
-              className="w-full rounded-lg border border-input bg-card p-2.5 text-sm text-foreground touch-manipulation focus:border-primary focus:ring-1 focus:ring-primary sm:w-36"
+              className="w-full touch-manipulation rounded-lg border border-input bg-card p-2.5 text-sm text-foreground focus:border-primary focus:ring-1 focus:ring-primary sm:w-36"
             >
               <option value="name">{t('appearanceSettings.projectSorting.alphabetical')}</option>
               <option value="date">{t('appearanceSettings.projectSorting.recentActivity')}</option>
+            </select>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.toolCallDisplay.label')}>
+        <SettingsCard>
+          <SettingsRow
+            label={t('appearanceSettings.toolCallDisplay.label')}
+            description={t('appearanceSettings.toolCallDisplay.description')}
+          >
+            <select
+              value={preferences.toolCallDisplay}
+              onChange={(event) => setPreference('toolCallDisplay', event.target.value as ToolCallDisplay)}
+              className="w-full touch-manipulation rounded-lg border border-input bg-card p-2.5 text-sm text-foreground focus:border-primary focus:ring-1 focus:ring-primary sm:w-36"
+            >
+              <option value="show">{t('appearanceSettings.toolCallDisplay.show')}</option>
+              <option value="collapsed">{t('appearanceSettings.toolCallDisplay.collapsed')}</option>
+              <option value="hidden">{t('appearanceSettings.toolCallDisplay.hidden')}</option>
             </select>
           </SettingsRow>
         </SettingsCard>
@@ -107,7 +129,7 @@ export default function AppearanceSettingsTab({
             <select
               value={codeEditorSettings.fontSize}
               onChange={(event) => onCodeEditorFontSizeChange(event.target.value)}
-              className="w-full rounded-lg border border-input bg-card p-2.5 text-sm text-foreground touch-manipulation focus:border-primary focus:ring-1 focus:ring-primary sm:w-28"
+              className="w-full touch-manipulation rounded-lg border border-input bg-card p-2.5 text-sm text-foreground focus:border-primary focus:ring-1 focus:ring-primary sm:w-28"
             >
               <option value="10">10px</option>
               <option value="11">11px</option>

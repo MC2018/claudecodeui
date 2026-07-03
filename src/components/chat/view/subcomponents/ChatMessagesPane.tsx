@@ -64,6 +64,7 @@ interface ChatMessagesPaneProps {
   onGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   showRawParameters?: boolean;
   showThinking?: boolean;
+  toolCallDisplay?: 'show' | 'collapsed' | 'hidden';
   selectedProject: Project;
 }
 
@@ -113,12 +114,13 @@ function ChatMessagesPane({
   onGrantToolPermission,
   showRawParameters,
   showThinking,
+  toolCallDisplay,
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const groupedVisibleMessages = useMemo(
-    () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
-    [visibleMessages, showThinking],
+    () => groupConsecutiveTools(visibleMessages, Boolean(showThinking), toolCallDisplay ?? 'show'),
+    [visibleMessages, showThinking, toolCallDisplay],
   );
 
   // Stable, deterministic keys for the messages rendered this pass.

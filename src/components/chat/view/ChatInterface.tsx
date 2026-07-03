@@ -33,6 +33,7 @@ function ChatInterface({
   onShowSettings,
   showRawParameters,
   showThinking,
+  toolCallDisplay,
   sendByCtrlEnter,
   externalMessageUpdate,
   newSessionTrigger,
@@ -356,6 +357,7 @@ function ChatInterface({
           onGrantToolPermission={handleGrantToolPermission}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
+          toolCallDisplay={toolCallDisplay}
           selectedProject={selectedProject}
         />
 

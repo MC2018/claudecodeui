@@ -26,15 +26,32 @@ function rendersNothing(message: ChatMessage, showThinking: boolean): boolean {
   return Boolean(message.isThinking && !showThinking);
 }
 
+export type ToolCallDisplayMode = 'show' | 'collapsed' | 'hidden';
+
+/** True for any message that represents tool activity in the transcript. */
+function isToolActivityMessage(message: ChatMessage): boolean {
+  return Boolean(message.isToolUse || message.type === 'tool');
+}
+
 export function groupConsecutiveTools(
   messages: ChatMessage[],
   showThinking: boolean = true,
+  toolCallDisplay: ToolCallDisplayMode = 'show',
 ): MessageListItem[] {
   const items: MessageListItem[] = [];
   let index = 0;
 
+  // In collapsed mode every tool call renders as a one-line expandable group
+  // row, so even a single call is wrapped instead of shown in full.
+  const groupThreshold = toolCallDisplay === 'collapsed' ? 1 : TOOL_GROUP_THRESHOLD;
+
   while (index < messages.length) {
     const message = messages[index];
+
+    if (toolCallDisplay === 'hidden' && isToolActivityMessage(message)) {
+      index += 1;
+      continue;
+    }
 
     if (!isGroupableToolMessage(message)) {
       items.push(message);
@@ -63,7 +80,7 @@ export function groupConsecutiveTools(
       break;
     }
 
-    if (run.length >= TOOL_GROUP_THRESHOLD) {
+    if (run.length >= groupThreshold) {
       items.push({
         _isGroup: true,
         toolName: message.toolName,

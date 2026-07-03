@@ -179,6 +179,13 @@
         "label": "Font Size",
         "description": "Editor font size in pixels"
       }
+    },
+    "toolCallDisplay": {
+      "label": "Tool Call Display",
+      "description": "How tool calls and their output appear in the chat",
+      "show": "Show in full",
+      "collapsed": "Collapsed",
+      "hidden": "Hidden"
     }
   },
   "mcpForm": {

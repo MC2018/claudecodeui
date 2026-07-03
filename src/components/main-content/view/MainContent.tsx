@@ -54,7 +54,7 @@ function MainContent({
   newSessionTrigger,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
-  const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter, toolCallDisplay } = preferences;
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
@@ -172,6 +172,7 @@ function MainContent({
                 onShowSettings={onShowSettings}
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
+                toolCallDisplay={toolCallDisplay}
                 sendByCtrlEnter={sendByCtrlEnter}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
