@@ -4,3 +4,4 @@ export { providerMcpService } from './services/mcp.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+export { initializeDesktopAppSync, closeDesktopAppSync } from './services/desktop-app-sync.service.js';

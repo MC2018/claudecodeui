@@ -13,7 +13,7 @@ import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
-import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
+import { closeDesktopAppSync, closeSessionsWatcher, initializeDesktopAppSync, initializeSessionsWatcher } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -1762,6 +1762,10 @@ async function startServer() {
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
 
+            // Mirror archive/delete state from the Claude desktop app's own
+            // session store (it never deletes transcript files itself)
+            await initializeDesktopAppSync();
+
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
@@ -1769,6 +1773,7 @@ async function startServer() {
         });
 
         await closeSessionsWatcher();
+        await closeDesktopAppSync();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
             try {
