@@ -5,6 +5,7 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { extractClaudeSessionTitles } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -379,6 +380,34 @@ async function pruneSessionsWithMissingTranscripts(): Promise<number> {
 }
 
 /**
+ * Backfills session names from renames recorded in Claude transcripts.
+ *
+ * The startup synchronizer is incremental (only files created since the last
+ * scan), so a rename made in Claude Code while this server was not watching
+ * would otherwise only be picked up whenever that transcript next changes.
+ */
+async function backfillClaudeSessionNames(): Promise<number> {
+  let renamed = 0;
+
+  for (const row of sessionsDb.getSessionsWithJsonlPath()) {
+    if (row.provider !== 'claude' || !row.jsonl_path) {
+      continue;
+    }
+
+    const titles = await extractClaudeSessionTitles(
+      row.jsonl_path,
+      row.provider_session_id ?? row.session_id
+    );
+    if (titles.renamed && titles.renamed !== row.custom_name) {
+      sessionsDb.updateSessionCustomName(row.session_id, titles.renamed);
+      renamed += 1;
+    }
+  }
+
+  return renamed;
+}
+
+/**
  * Starts provider filesystem watchers and performs initial DB synchronization.
  */
 export async function initializeSessionsWatcher(): Promise<void> {
@@ -398,6 +427,16 @@ export async function initializeSessionsWatcher(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('Failed to prune sessions with missing transcripts', { error: message });
+  }
+
+  try {
+    const renamed = await backfillClaudeSessionNames();
+    if (renamed > 0) {
+      console.log('Backfilled session names from Claude transcript renames', { renamed });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Failed to backfill session names from transcripts', { error: message });
   }
 
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {

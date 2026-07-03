@@ -18,6 +18,84 @@ type ParsedSession = {
   sessionName?: string;
 };
 
+type TranscriptTitles = {
+  /** Latest explicit rename (custom-title entry) — authoritative. */
+  renamed?: string;
+  /** Latest generated title (ai-title / last-prompt) — fallback only. */
+  derived?: string;
+};
+
+/**
+ * Scans a transcript backwards for its title entries.
+ *
+ * Renames made in Claude Code (the CLI resume picker or the desktop app)
+ * append a `custom-title` entry to the transcript, so the most recent one is
+ * the user's chosen name and takes precedence over everything else. Generated
+ * titles (`ai-title`, `last-prompt`) are collected separately as fallbacks.
+ * Entries whose sessionId does not match are skipped: forked sessions copy
+ * the parent transcript prefix, including the parent's title entries.
+ *
+ * Exported so the sessions watcher can reuse it to backfill names for
+ * already-indexed sessions at startup.
+ */
+export async function extractClaudeSessionTitles(
+  filePath: string,
+  sessionId: string
+): Promise<TranscriptTitles> {
+  const titles: TranscriptTitles = {};
+
+  try {
+    const content = await readFile(filePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]?.trim();
+      if (!line) {
+        continue;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      const data = parsed as Record<string, unknown>;
+      if (typeof data.sessionId !== 'string' || data.sessionId !== sessionId) {
+        continue;
+      }
+
+      const eventType = typeof data.type === 'string' ? data.type : undefined;
+      if (eventType === 'custom-title') {
+        const customTitle = typeof data.customTitle === 'string' ? data.customTitle : undefined;
+        if (customTitle?.trim()) {
+          titles.renamed = customTitle;
+          break;
+        }
+        continue;
+      }
+
+      if (titles.derived) {
+        continue;
+      }
+
+      const aiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
+      const lastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
+      if (
+        (eventType === 'ai-title' && aiTitle?.trim()) ||
+        (eventType === 'last-prompt' && lastPrompt?.trim())
+      ) {
+        titles.derived = aiTitle || lastPrompt;
+      }
+    }
+  } catch {
+    // Ignore missing/unreadable files so sync can continue.
+  }
+
+  return titles;
+}
+
 /**
  * Session indexer for Claude transcript artifacts.
  */
@@ -133,6 +211,16 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    // An explicit rename in Claude Code always wins, so names stay mirrored
+    // even after this app has stored a different one.
+    const titles = await extractClaudeSessionTitles(filePath, parsed.sessionId);
+    if (titles.renamed) {
+      return {
+        ...parsed,
+        sessionName: normalizeSessionName(titles.renamed, 'Untitled Claude Session'),
+      };
+    }
+
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
@@ -145,57 +233,11 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       };
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
-    if (!sessionName) {
-      sessionName = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
-    }
+    const sessionName = nameMap.get(parsed.sessionId) ?? titles.derived;
 
     return {
       ...parsed,
       sessionName: normalizeSessionName(sessionName, 'Untitled Claude Session'),
     };
-  }
-
-  private async extractSessionAiTitleFromEnd(
-    filePath: string,
-    sessionId: string
-  ): Promise<string | undefined> {
-    try {
-      const content = await readFile(filePath, 'utf8');
-      const lines = content.split(/\r?\n/);
-
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const line = lines[index]?.trim();
-        if (!line) {
-          continue;
-        }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const data = parsed as Record<string, unknown>;
-        const eventType = typeof data.type === 'string' ? data.type : undefined;
-        const eventSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
-        const aiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
-        const lastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
-        const claudeRenamedTitle = typeof data.customTitle === 'string' ? data.customTitle : undefined;
-
-        if (
-          (eventType === 'ai-title' && eventSessionId === sessionId && aiTitle?.trim()) ||
-          (eventType === 'last-prompt' && eventSessionId === sessionId && lastPrompt?.trim()) ||
-          (eventType === "custom-title" && eventSessionId === sessionId && claudeRenamedTitle?.trim())
-        ) {
-          return aiTitle || lastPrompt || claudeRenamedTitle;
-        }
-      }
-    } catch {
-      // Ignore missing/unreadable files so sync can continue.
-    }
-
-    return undefined;
   }
 }
