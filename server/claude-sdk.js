@@ -159,11 +159,14 @@ function mapCliOptionsToSDK(options = {}) {
   // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
   sdkOptions.env = { ...process.env };
 
-  // Record sessions with the interactive CLI entrypoint instead of the SDK default
-  // ("sdk-ts"). Claude Code's `--resume` picker hides sdk/print sessions, so without
-  // this override sessions created here never appear in Claude Code itself. The SDK
-  // only sets CLAUDE_CODE_ENTRYPOINT when it is absent, so presetting it wins.
-  sdkOptions.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+  // Record sessions with a "cloudcli" entrypoint instead of the SDK default
+  // ("sdk-ts"). Claude Code's `--resume` picker hides the known sdk entrypoints,
+  // so without this override sessions created here never appear in Claude Code.
+  // The SDK only sets CLAUDE_CODE_ENTRYPOINT when absent, so presetting it wins.
+  // "cli" cannot be used: since at least CLI 2.1.195 a spoof check rewrites
+  // env "cli" to "sdk-cli" (hidden) when the process runs in SDK mode, while
+  // unknown values pass through and the picker shows them.
+  sdkOptions.env.CLAUDE_CODE_ENTRYPOINT = 'cloudcli';
 
   // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
   // which does not reliably follow npm's shell wrappers like cross-spawn does.
