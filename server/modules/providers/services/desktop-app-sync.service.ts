@@ -285,9 +285,9 @@ async function runReconcile(): Promise<void> {
 
   reconcileInFlight = true;
   try {
-    const archived = await reconcileDesktopSessionState();
-    if (archived > 0) {
-      console.log('Archived sessions to mirror Claude desktop app state', { archived });
+    const changed = await reconcileDesktopSessionState();
+    if (changed > 0) {
+      console.log('Reconciled sessions to mirror Claude desktop app state', { changed });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
