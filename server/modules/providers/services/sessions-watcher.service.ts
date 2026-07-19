@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { promises as fsPromises } from 'node:fs';
+import { promises as fsPromises, existsSync } from 'node:fs';
 
 import chokidar, { type FSWatcher } from 'chokidar';
 
@@ -380,7 +380,42 @@ async function pruneSessionsWithMissingTranscripts(): Promise<number> {
 }
 
 /**
- * Backfills session names from renames recorded in Claude transcripts.
+ * Resolves the real top-level transcript for a Claude session row.
+ *
+ * The stored `jsonl_path` cannot be trusted: legacy rows recorded a
+ * `subagents/agent-*.jsonl` path (subagent transcripts carry the parent's
+ * session id, so an old first-line-keyed index mis-set the path there), which
+ * holds none of the parent's rename entries. Claude Code names the real
+ * transcript `<session-id>.jsonl` directly under the encoded-cwd project
+ * folder, so derive that and prefer it. Returns null when it does not exist.
+ */
+function resolveClaudeTranscriptPath(row: {
+  provider_session_id: string | null;
+  session_id: string;
+  project_path: string | null;
+  jsonl_path: string | null;
+}): string | null {
+  const transcriptId = row.provider_session_id ?? row.session_id;
+
+  if (row.project_path) {
+    const encodedCwd = row.project_path.replace(/[^a-zA-Z0-9]/g, '-');
+    const derived = path.join(os.homedir(), '.claude', 'projects', encodedCwd, `${transcriptId}.jsonl`);
+    if (existsSync(derived)) {
+      return derived;
+    }
+  }
+
+  // Only trust the stored path when it is a real top-level transcript.
+  if (row.jsonl_path && !path.normalize(row.jsonl_path).split(path.sep).includes('subagents')) {
+    return existsSync(row.jsonl_path) ? row.jsonl_path : null;
+  }
+
+  return null;
+}
+
+/**
+ * Backfills session names from renames recorded in Claude transcripts, and
+ * repairs rows whose stored transcript path pointed at a subagent file.
  *
  * The startup synchronizer is incremental (only files created since the last
  * scan), so a rename made in Claude Code while this server was not watching
@@ -390,12 +425,22 @@ async function backfillClaudeSessionNames(): Promise<number> {
   let renamed = 0;
 
   for (const row of sessionsDb.getSessionsWithJsonlPath()) {
-    if (row.provider !== 'claude' || !row.jsonl_path) {
+    if (row.provider !== 'claude') {
       continue;
     }
 
+    const transcriptPath = resolveClaudeTranscriptPath(row);
+    if (!transcriptPath) {
+      continue;
+    }
+
+    // Repair a mis-recorded (subagent) path so prune and future reads are correct.
+    if (transcriptPath !== row.jsonl_path) {
+      sessionsDb.updateSessionJsonlPath(row.session_id, transcriptPath);
+    }
+
     const titles = await extractClaudeSessionTitles(
-      row.jsonl_path,
+      transcriptPath,
       row.provider_session_id ?? row.session_id
     );
     if (titles.renamed && titles.renamed !== row.custom_name) {

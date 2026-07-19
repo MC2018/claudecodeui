@@ -220,6 +220,20 @@ export const sessionsDb = {
     ).run(customName, sessionId);
   },
 
+  /**
+   * Repairs the transcript path for one session without touching any other
+   * field (notably not the archived flag). Used to fix legacy rows whose
+   * `jsonl_path` was mis-recorded as a subagent transcript.
+   */
+  updateSessionJsonlPath(sessionId: string, jsonlPath: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET jsonl_path = ?
+       WHERE session_id = ?`
+    ).run(jsonlPath, sessionId);
+  },
+
   getSessionById(sessionId: string): SessionRow | null {
     const db = getConnection();
     const row = db
