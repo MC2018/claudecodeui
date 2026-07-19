@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { buildSessionUpsertedEvent } from '@/modules/providers/services/sessions-watcher.service.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 
 /**
@@ -53,11 +54,17 @@ function isDesktopMetadataFile(filePath: string): boolean {
   return base.startsWith('local_') && base.endsWith('.json');
 }
 
+type DesktopSessionState = {
+  isArchived: boolean;
+  /** The name shown in the desktop app sidebar; may be an auto title. */
+  title: string | null;
+};
+
 /**
- * Reads the desktop store and returns cli-session-id -> isArchived.
+ * Reads the desktop store and returns cli-session-id -> state (archive + title).
  * Returns null when the store does not exist (desktop app not installed).
  */
-async function readDesktopSessionStates(): Promise<Map<string, boolean> | null> {
+async function readDesktopSessionStates(): Promise<Map<string, DesktopSessionState> | null> {
   let installDirs: string[];
   try {
     installDirs = await fsPromises.readdir(DESKTOP_SESSIONS_STORE);
@@ -65,7 +72,7 @@ async function readDesktopSessionStates(): Promise<Map<string, boolean> | null> 
     return null;
   }
 
-  const states = new Map<string, boolean>();
+  const states = new Map<string, DesktopSessionState>();
   for (const installDir of installDirs) {
     const installPath = path.join(DESKTOP_SESSIONS_STORE, installDir);
     let workspaceDirs: string[];
@@ -91,13 +98,18 @@ async function readDesktopSessionStates(): Promise<Map<string, boolean> | null> 
 
         try {
           const raw = await fsPromises.readFile(path.join(workspacePath, entry), 'utf8');
-          const data = JSON.parse(raw) as { cliSessionId?: unknown; isArchived?: unknown };
+          const data = JSON.parse(raw) as { cliSessionId?: unknown; isArchived?: unknown; title?: unknown };
           if (typeof data.cliSessionId === 'string' && data.cliSessionId) {
             // A session can appear in several metadata files across
-            // workspaces; treat it as archived only if every copy agrees.
+            // workspaces; treat it as archived only if every copy agrees,
+            // and keep the first non-empty title seen for it.
             const existing = states.get(data.cliSessionId);
             const archived = data.isArchived === true;
-            states.set(data.cliSessionId, existing === undefined ? archived : existing && archived);
+            const title = typeof data.title === 'string' && data.title.trim() ? data.title : null;
+            states.set(data.cliSessionId, {
+              isArchived: existing === undefined ? archived : existing.isArchived && archived,
+              title: existing?.title ?? title,
+            });
           }
         } catch {
           // Unreadable metadata never triggers an archive.
@@ -178,8 +190,13 @@ function broadcastSessionRemoval(sessionId: string, projectPath: string | null):
 }
 
 /**
- * One reconcile pass: archives active claude rows the desktop app has
- * archived or deleted. Returns the number of rows archived.
+ * One reconcile pass. Two mirrors, desktop app -> local DB:
+ * - name: the desktop sidebar title (including the app's own auto titles,
+ *   which never get written to the transcript) becomes the session name, so
+ *   CloudCLI shows what the desktop app shows.
+ * - archive: rows the desktop app archived or deleted are archived here.
+ *
+ * Returns the count of rows changed (renamed or archived).
  */
 export async function reconcileDesktopSessionState(): Promise<number> {
   const desktopStates = await readDesktopSessionStates();
@@ -187,19 +204,29 @@ export async function reconcileDesktopSessionState(): Promise<number> {
     return 0;
   }
 
-  let archived = 0;
+  let changed = 0;
+  const renamedIds: string[] = [];
   for (const row of sessionsDb.getAllSessions()) {
     if (row.provider !== 'claude') {
       continue;
     }
 
     const cliSessionId = row.provider_session_id ?? row.session_id;
-    const desktopArchived = desktopStates.get(cliSessionId);
+    const desktopState = desktopStates.get(cliSessionId);
+
+    // Mirror the desktop title. This is the only source for the desktop app's
+    // auto-cleaned titles (titleSource "auto"), which are never written to the
+    // transcript, so the transcript-based name sync alone always misses them.
+    if (desktopState?.title && desktopState.title !== row.custom_name) {
+      sessionsDb.updateSessionCustomName(row.session_id, desktopState.title);
+      renamedIds.push(cliSessionId);
+      changed += 1;
+    }
 
     let shouldArchive = false;
-    if (desktopArchived === true) {
+    if (desktopState?.isArchived === true) {
       shouldArchive = true;
-    } else if (desktopArchived === undefined && row.jsonl_path) {
+    } else if (desktopState === undefined && row.jsonl_path) {
       // No metadata: only a desktop-owned transcript means the app deleted
       // the session. Skip transcripts with fresh activity so a brand-new
       // desktop session is never archived before its metadata appears.
@@ -215,10 +242,29 @@ export async function reconcileDesktopSessionState(): Promise<number> {
 
     sessionsDb.updateSessionIsArchived(row.session_id, true);
     broadcastSessionRemoval(row.session_id, row.project_path);
-    archived += 1;
+    changed += 1;
   }
 
-  return archived;
+  await broadcastSessionRenames(renamedIds);
+  return changed;
+}
+
+/**
+ * Pushes a `session_upserted` delta for each renamed session so open sidebars
+ * refresh the name live, without a full project-list refetch.
+ */
+async function broadcastSessionRenames(cliSessionIds: string[]): Promise<void> {
+  for (const cliSessionId of cliSessionIds) {
+    const event = await buildSessionUpsertedEvent(cliSessionId);
+    if (!event) {
+      continue;
+    }
+    connectedClients.forEach(client => {
+      if (client.readyState === WS_OPEN_STATE) {
+        client.send(event);
+      }
+    });
+  }
 }
 
 function scheduleReconcile(): void {
