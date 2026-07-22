@@ -14,6 +14,11 @@ export default {
       },
     },
     extend: {
+      screens: {
+        // Phones in landscape: short viewport height in landscape orientation.
+        // Excludes desktops (tall) so the compact composer only kicks in on mobile.
+        lscompact: { raw: '(orientation: landscape) and (max-height: 600px)' },
+      },
       fontFamily: {
         sans: ['"Encode Sans"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
         serif: ['Merriweather', 'Georgia', 'Cambria', '"Times New Roman"', 'serif'],

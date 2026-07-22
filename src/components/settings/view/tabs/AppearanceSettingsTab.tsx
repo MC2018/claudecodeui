@@ -1,7 +1,12 @@
 import { useTranslation } from 'react-i18next';
 
 import { DarkModeToggle } from '../../../../shared/view/ui';
-import { useUiPreferences, type ToolCallDisplay } from '../../../../hooks/useUiPreferences';
+import {
+  useUiPreferences,
+  type ToolCallDisplay,
+  UI_SCALE_MIN,
+  UI_SCALE_MAX,
+} from '../../../../hooks/useUiPreferences';
 import type { CodeEditorSettingsState, ProjectSortOrder } from '../../types/types';
 import LanguageSelector from '../../../../shared/view/ui/LanguageSelector';
 import SettingsCard from '../SettingsCard';
@@ -64,6 +69,31 @@ export default function AppearanceSettingsTab({
               <option value="name">{t('appearanceSettings.projectSorting.alphabetical')}</option>
               <option value="date">{t('appearanceSettings.projectSorting.recentActivity')}</option>
             </select>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.uiScale.label')}>
+        <SettingsCard>
+          <SettingsRow
+            label={t('appearanceSettings.uiScale.label')}
+            description={t('appearanceSettings.uiScale.description')}
+          >
+            <div className="flex w-full items-center gap-3 sm:w-56">
+              <input
+                type="range"
+                min={Math.round(UI_SCALE_MIN * 100)}
+                max={Math.round(UI_SCALE_MAX * 100)}
+                step={5}
+                value={Math.round(preferences.uiScale * 100)}
+                onChange={(event) => setPreference('uiScale', Number(event.target.value) / 100)}
+                aria-label={t('appearanceSettings.uiScale.label')}
+                className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+              />
+              <span className="w-10 flex-shrink-0 text-right text-sm tabular-nums text-muted-foreground">
+                {Math.round(preferences.uiScale * 100)}%
+              </span>
+            </div>
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>

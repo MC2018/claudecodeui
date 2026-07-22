@@ -4,6 +4,11 @@ export type ToolCallDisplay = 'show' | 'collapsed' | 'hidden';
 
 const TOOL_CALL_DISPLAY_VALUES: readonly ToolCallDisplay[] = ['show', 'collapsed', 'hidden'];
 
+/** Global UI zoom multiplier bounds (see AppearanceSettingsTab). */
+export const UI_SCALE_MIN = 0.7;
+export const UI_SCALE_MAX = 1.3;
+export const UI_SCALE_DEFAULT = 1;
+
 type UiPreferences = {
   showRawParameters: boolean;
   showThinking: boolean;
@@ -11,6 +16,7 @@ type UiPreferences = {
   sidebarVisible: boolean;
   voiceEnabled: boolean;
   toolCallDisplay: ToolCallDisplay;
+  uiScale: number;
 };
 
 type UiPreferenceKey = keyof UiPreferences;
@@ -43,6 +49,7 @@ const DEFAULTS: UiPreferences = {
   sidebarVisible: true,
   voiceEnabled: false,
   toolCallDisplay: 'show',
+  uiScale: UI_SCALE_DEFAULT,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];
@@ -81,6 +88,15 @@ const parsePreference = <K extends UiPreferenceKey>(
     return (
       TOOL_CALL_DISPLAY_VALUES.includes(value as ToolCallDisplay) ? value : fallback
     ) as UiPreferences[K];
+  }
+
+  if (key === 'uiScale') {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+    const clamped = Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, parsed));
+    return clamped as UiPreferences[K];
   }
 
   return parseBoolean(value, fallback as boolean) as UiPreferences[K];

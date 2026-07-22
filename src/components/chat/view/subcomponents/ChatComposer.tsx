@@ -300,7 +300,10 @@ export default function ChatComposer({
 
           <input {...getInputProps()} />
 
-          <PromptInputBody>
+          {/* In mobile landscape (lscompact) the body and footer sit on one row
+              to reclaim vertical space; portrait keeps them stacked. */}
+          <div className="lscompact:flex lscompact:items-end">
+          <PromptInputBody className="lscompact:min-w-0 lscompact:flex-1">
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
               <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
                 {renderInputWithMentions(input)}
@@ -323,7 +326,7 @@ export default function ChatComposer({
             />
         </PromptInputBody>
 
-        <PromptInputFooter>
+        <PromptInputFooter className="lscompact:shrink-0 lscompact:justify-end lscompact:gap-2 lscompact:border-l lscompact:border-t-0">
           <PromptInputTools>
             <PromptInputButton
               tooltip={{ content: t('input.attachImages') }}
@@ -431,6 +434,7 @@ export default function ChatComposer({
             </PromptInputSubmit>
           </div>
         </PromptInputFooter>
+        </div>
       </PromptInput>
       </div>}
     </div>

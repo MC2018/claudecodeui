@@ -186,6 +186,10 @@
       "show": "Show in full",
       "collapsed": "Collapsed",
       "hidden": "Hidden"
+    },
+    "uiScale": {
+      "label": "UI Scale",
+      "description": "Scale all text and interface elements up or down to fit more on screen"
     }
   },
   "mcpForm": {
