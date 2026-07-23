@@ -185,7 +185,10 @@ const markdownComponents = {
 
 export function Markdown({ children, className }: MarkdownProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
+  // Only treat `$$…$$` as math. Single-dollar inline math mangles ordinary
+  // currency ("$2,000 … $10,000" became one italic run) and shell vars ($PATH),
+  // which are far more common in chat than LaTeX.
+  const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }] as any], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { openFileInEditor } = usePaletteOps();
 
