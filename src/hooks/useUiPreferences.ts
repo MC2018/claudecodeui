@@ -17,6 +17,7 @@ type UiPreferences = {
   voiceEnabled: boolean;
   toolCallDisplay: ToolCallDisplay;
   uiScale: number;
+  showUsageLimits: boolean;
 };
 
 type UiPreferenceKey = keyof UiPreferences;
@@ -50,6 +51,7 @@ const DEFAULTS: UiPreferences = {
   voiceEnabled: false,
   toolCallDisplay: 'show',
   uiScale: UI_SCALE_DEFAULT,
+  showUsageLimits: true,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

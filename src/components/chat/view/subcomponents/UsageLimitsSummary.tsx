@@ -1,38 +1,19 @@
-import { useUsageLimits, type UsageLimit } from '../../../../hooks/useUsageLimits';
-
-// Short label shown under each bar. Weekly-scoped limits carry the model name.
-function shortLabel(limit: UsageLimit): string {
-  if (limit.kind === 'session') return '5h';
-  if (limit.kind === 'weekly_all') return 'wk';
-  return limit.model ?? 'wk';
-}
-
-function fullLabel(limit: UsageLimit): string {
-  if (limit.kind === 'session') return 'Session (5h)';
-  if (limit.kind === 'weekly_all') return 'Weekly';
-  return limit.model ? `${limit.model} (weekly)` : 'Weekly (scoped)';
-}
-
-// Fill colour by severity; the API reports 'normal' until a limit gets tight.
-function fillClass(severity: string): string {
-  if (severity === 'critical' || severity === 'high') return 'bg-red-500';
-  if (severity === 'warning' || severity === 'medium') return 'bg-amber-500';
-  return 'bg-primary';
-}
-
-function resetsInText(resetsAt: string | null): string {
-  if (!resetsAt) return '';
-  const ms = new Date(resetsAt).getTime() - Date.now();
-  if (!Number.isFinite(ms) || ms <= 0) return 'now';
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
+import {
+  useUsageLimits,
+  usageShortLabel as shortLabel,
+  usageFullLabel as fullLabel,
+  usageFillClass as fillClass,
+  usageResetsInText as resetsInText,
+} from '../../../../hooks/useUsageLimits';
+import { useUiPreferences } from '../../../../hooks/useUiPreferences';
 
 export default function UsageLimitsSummary() {
   const usage = useUsageLimits();
+  const { preferences } = useUiPreferences();
+
+  if (!preferences.showUsageLimits) {
+    return null;
+  }
 
   if (!usage || !usage.available || usage.limits.length === 0) {
     return null;

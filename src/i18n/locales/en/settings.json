@@ -376,7 +376,14 @@
       "button": "Login",
       "reLoginButton": "Re-login"
     },
-    "error": "Error: {{error}}"
+    "error": "Error: {{error}}",
+    "usage": {
+      "title": "Usage limits",
+      "resetsIn": "resets in",
+      "unavailable": "Usage data is unavailable right now.",
+      "showInChat": "Show usage in chat",
+      "showInChatDescription": "Display these limits next to the message box."
+    }
   },
   "permissions": {
     "title": "Permission Settings",
