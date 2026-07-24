@@ -63,6 +63,7 @@ import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import providerRoutes from './modules/providers/provider.routes.js';
 import voiceRoutes from './voice-proxy.js';
+import usageRoutes from './routes/usage.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
@@ -204,6 +205,8 @@ app.use('/api/commands', authenticateToken, commandsRoutes);
 app.use('/api/settings', authenticateToken, settingsRoutes);
 
 app.use('/api/notifications', authenticateToken, notificationRoutes);
+
+app.use('/api/usage', authenticateToken, usageRoutes);
 
 // User API Routes (protected)
 app.use('/api/user', authenticateToken, userRoutes);

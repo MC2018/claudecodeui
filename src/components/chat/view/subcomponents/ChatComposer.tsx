@@ -34,6 +34,7 @@ import ImageAttachment from './ImageAttachment';
 import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
+import UsageLimitsSummary from './UsageLimitsSummary';
 
 interface MentionableFile {
   name: string;
@@ -378,6 +379,8 @@ export default function ChatComposer({
                 </span>
               </div>
             </button>
+
+            <UsageLimitsSummary />
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 

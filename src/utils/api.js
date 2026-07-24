@@ -55,6 +55,7 @@ export const api = {
   // the DB-assigned `projectId`; parameter names reflect that for clarity.
   projects: () => authenticatedFetch('/api/projects'),
   archivedProjects: () => authenticatedFetch('/api/projects/archived'),
+  usageLimits: () => authenticatedFetch('/api/usage'),
   projectSessions: (projectId, { limit = 20, offset = 0 } = {}) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
