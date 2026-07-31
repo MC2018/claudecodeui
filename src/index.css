@@ -568,15 +568,11 @@
     contain: layout style paint;
   }
 
-  /* Skip layout/paint for messages scrolled off-screen. This is the biggest
-     lever for scroll smoothness with a long, un-virtualized history: the
-     browser only renders what is near the viewport. `contain-intrinsic-size`
-     with the `auto` keyword remembers each row's real height once rendered, so
-     the scrollbar stays stable. */
-  .chat-message {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 160px;
-  }
+  /* NOTE: do NOT add `content-visibility: auto` to `.chat-message`. It breaks
+     the browser's native scroll-anchoring — verified in-browser: with it on, a
+     prepend of older messages leaves scrollTop unchanged (the view jumps ~10k
+     px to older content, the rubber-band); with it off, the browser adjusts
+     scrollTop by exactly the prepended height and the viewport stays put. */
 
   .chat-composer-shell {
     contain: layout style;
@@ -599,19 +595,14 @@
   }
 
   .chat-message {
+    /* `contain` is safe; `content-visibility: auto` is deliberately NOT used
+       here — it breaks the browser's native scroll-anchoring, so prepending
+       older messages leaves scrollTop unchanged and the viewport jumps to
+       older content (the rubber-band). Verified in-browser: off => the browser
+       adjusts scrollTop by exactly the prepended height and the view stays put;
+       on => no adjustment, ~10k px jump. `contain-intrinsic-size` only matters
+       with content-visibility, so it is dropped too. */
     contain: layout style paint;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 180px;
-  }
-
-  .chat-message.assistant {
-    contain-intrinsic-size: auto 240px;
-  }
-
-  .chat-message.user,
-  .chat-message.tool,
-  .chat-message.error {
-    contain-intrinsic-size: auto 96px;
   }
 
   /* Mobile touch optimization and safe areas */
