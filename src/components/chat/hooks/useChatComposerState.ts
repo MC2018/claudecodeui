@@ -985,6 +985,9 @@ export function useChatComposerState({
         sendMessage({
           type: 'chat.permission-response',
           requestId,
+          // Lets the server tell the user's other open devices to drop this
+          // prompt once it has been answered here.
+          sessionId: currentSessionId ?? selectedSession?.id ?? null,
           allow: Boolean(decision?.allow),
           updatedInput: decision?.updatedInput,
           message: decision?.message,
@@ -996,7 +999,7 @@ export function useChatComposerState({
         previous.filter((request) => !validIds.includes(request.requestId)),
       );
     },
-    [sendMessage, setPendingPermissionRequests],
+    [currentSessionId, selectedSession?.id, sendMessage, setPendingPermissionRequests],
   );
 
   const [isInputFocused, setIsInputFocused] = useState(false);

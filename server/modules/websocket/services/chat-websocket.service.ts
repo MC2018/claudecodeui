@@ -303,6 +303,29 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
     message: typeof data.message === 'string' ? data.message : undefined,
     rememberEntry: data.rememberEntry,
   });
+
+  // Prompts are broadcast to every device, so once one of them answers, the
+  // rest must drop their copy — otherwise the same question keeps sitting on
+  // the other screens with no way to dismiss it. The answering client already
+  // removed it locally; this is a no-op there.
+  const sessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : null;
+  if (!sessionId) {
+    return;
+  }
+
+  const payload = JSON.stringify({
+    kind: 'permission_cancelled',
+    requestId: data.requestId,
+    sessionId,
+    reason: 'answered_on_another_device',
+    timestamp: new Date().toISOString(),
+  });
+
+  connectedClients.forEach((client) => {
+    if (client.readyState === WS_OPEN_STATE) {
+      client.send(payload);
+    }
+  });
 }
 
 /**

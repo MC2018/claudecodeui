@@ -1,10 +1,21 @@
-import { WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import type {
   LLMProvider,
   NormalizedMessage,
   RealtimeClientConnection,
 } from '@/shared/types.js';
 import { createCompleteMessage, readObjectRecord } from '@/shared/utils.js';
+
+/**
+ * Event kinds that block on a human answer and are never written to the
+ * provider transcript, so a client that missed them has no way to recover
+ * them. These are broadcast to every client instead of only the run's socket.
+ */
+const INTERACTIVE_EVENT_KINDS = new Set<NormalizedMessage['kind']>([
+  'permission_request',
+  'permission_cancelled',
+  'interactive_prompt',
+]);
 
 type ChatSessionWriterOptions = {
   connection: RealtimeClientConnection;
@@ -138,8 +149,33 @@ export class ChatSessionWriter {
   }
 
   private forward(message: NormalizedMessage): void {
+    const payload = JSON.stringify(message);
+
+    // Events that need a human answer must reach every open client, not just
+    // the socket that currently owns the run.
+    //
+    // A run's writer points at a single connection, and `chat.subscribe`
+    // re-points it at whichever client subscribed most recently. With the app
+    // open on two devices, the second one to subscribe silently takes over the
+    // stream. Ordinary output survives that because it is persisted to the
+    // provider transcript and every client re-reads it over REST when the file
+    // watcher fires. Permission prompts and interactive questions are
+    // in-memory only, so the device that lost the stream would wait forever
+    // for a prompt it can never see. Broadcasting them keeps the answer
+    // reachable from whichever device the user actually has in hand; the
+    // matching `permission_cancelled` (emitted on resolve) clears the copies
+    // on the other devices.
+    if (INTERACTIVE_EVENT_KINDS.has(message.kind)) {
+      connectedClients.forEach((client) => {
+        if (client.readyState === WS_OPEN_STATE) {
+          client.send(payload);
+        }
+      });
+      return;
+    }
+
     if (this.ws.readyState === WS_OPEN_STATE) {
-      this.ws.send(JSON.stringify(message));
+      this.ws.send(payload);
     }
   }
 }
