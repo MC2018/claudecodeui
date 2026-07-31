@@ -10,8 +10,12 @@ import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messag
 
 import { normalizedToChatMessages } from './useChatMessages';
 
-const MESSAGES_PER_PAGE = 20;
+const MESSAGES_PER_PAGE = 40;
 const INITIAL_VISIBLE_MESSAGES = 100;
+// Begin fetching the next older page while the user is still this far from the
+// top, so pages are already in place by the time they scroll up to them
+// instead of stalling at the very top waiting on a round-trip.
+const OLDER_PREFETCH_PX = 1200;
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
@@ -129,7 +133,6 @@ export function useChatSessionState({
   const pendingScrollRestoreRef = useRef<ScrollRestoreState | null>(null);
   const pendingInitialScrollRef = useRef(true);
   const messagesOffsetRef = useRef(0);
-  const scrollPositionRef = useRef({ height: 0, top: 0 });
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
@@ -397,14 +400,11 @@ export function useChatSessionState({
       wasNearTopRef.current = false;
     }
 
-    if (!allMessagesLoadedRef.current) {
-      if (!scrolledNearTop) { topLoadLockRef.current = false; return; }
-      if (topLoadLockRef.current) {
-        if (container.scrollTop > 20) topLoadLockRef.current = false;
-        return;
-      }
-      const didLoad = await loadOlderMessages(container);
-      if (didLoad) topLoadLockRef.current = true;
+    if (!allMessagesLoadedRef.current && container.scrollTop < OLDER_PREFETCH_PX) {
+      // Fire-and-forget: loadOlderMessages self-guards against concurrent runs,
+      // and the prepend restore pushes scrollTop back above the threshold, so
+      // this fetches one page per approach to the top rather than spamming.
+      void loadOlderMessages(container);
     }
   }, [hasMoreMessages, isNearBottom, loadOlderMessages]);
 
@@ -728,34 +728,27 @@ export function useChatSessionState({
     return chatMessages.slice(-visibleMessageCount);
   }, [chatMessages, visibleMessageCount]);
 
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
-  });
-
-  useEffect(() => {
+  // Keep the newest message in view when the user is already at the bottom.
+  // Runs before paint (a layout effect) so there is no visible downward jump.
+  // When the user has scrolled up, new messages are appended *below* the
+  // viewport, so their position must be left untouched — the previous code
+  // added the new content's height to scrollTop here, shoving the reader
+  // downward (the rubber-band). Prepended older messages are handled by the
+  // dedicated restore layout effect above, not here.
+  useLayoutEffect(() => {
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
     if (searchScrollActiveRef.current) return;
 
     if (!isUserScrolledUp) {
-      setTimeout(() => scrollToBottom(), 50);
-      return;
+      scrollToBottom();
     }
-
-    const container = scrollContainerRef.current;
-    const prevHeight = scrollPositionRef.current.height;
-    const prevTop = scrollPositionRef.current.top;
-    const newHeight = container.scrollHeight;
-    const heightDiff = newHeight - prevHeight;
-    if (heightDiff > 0 && prevTop > 0) container.scrollTop = prevTop + heightDiff;
   }, [chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    container.addEventListener('scroll', handleScroll);
+    container.addEventListener('scroll', handleScroll, { passive: true });
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 

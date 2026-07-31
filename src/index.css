@@ -566,6 +566,10 @@
 @layer components {
   .chat-messages-pane {
     contain: layout style paint;
+    /* We restore scroll position manually when older messages are prepended.
+       Leaving the browser's native scroll-anchoring on makes both adjust the
+       offset at once, which produces the visible wobble. */
+    overflow-anchor: none;
   }
 
   .chat-composer-shell {
