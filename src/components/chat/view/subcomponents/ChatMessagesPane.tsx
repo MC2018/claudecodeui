@@ -163,7 +163,12 @@ function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className="chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-3 sm:py-4"
+      // The activity indicator ("Reasoning…", h-8) floats over the top edge of
+      // the composer and overlaps the end of the transcript, cutting off the
+      // last row. Reserve a constant buffer that clears it — constant rather
+      // than toggled on `isProcessing`, so starting/stopping a run never
+      // changes scrollHeight and shifts the view.
+      className="chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-14 pt-3 sm:pb-16 sm:pt-4"
     >
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
