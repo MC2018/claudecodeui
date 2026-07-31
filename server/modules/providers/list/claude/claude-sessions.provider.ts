@@ -101,6 +101,89 @@ async function parseAgentTools(filePath: string): Promise<AnyRecord[]> {
   return tools;
 }
 
+// Parsed + sorted session messages cached by transcript path, invalidated by
+// file mtime/size. Pagination re-requests the same file for every older page,
+// so without this each "load more" re-streamed and re-parsed the whole JSONL
+// (plus agent sub-files) — the main cause of the "scroll up, wait, jump" lag.
+// The active (streaming) session's file changes constantly, so it naturally
+// bypasses the cache; the win is on older, settled history.
+const MESSAGES_CACHE_MAX = 24;
+const messagesCache = new Map<string, { mtimeMs: number; size: number; sorted: AnyRecord[] }>();
+
+async function getSortedMessagesCached(
+  jsonLPath: string,
+  providerSessionId: string,
+): Promise<AnyRecord[]> {
+  const stat = await fsp.stat(jsonLPath).catch(() => null);
+  const cached = messagesCache.get(jsonLPath);
+  if (stat && cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.sorted;
+  }
+
+  const projectDir = path.dirname(jsonLPath);
+  const files = await fsp.readdir(projectDir);
+  const agentFiles = files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'));
+
+  const messages: AnyRecord[] = [];
+  const fileStream = fs.createReadStream(jsonLPath);
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const entry = JSON.parse(line) as AnyRecord;
+      if (entry.sessionId === providerSessionId) {
+        messages.push(entry);
+      }
+    } catch {
+      // Skip malformed JSONL lines that can happen during concurrent writes.
+    }
+  }
+
+  const agentToolsByAgentId = new Map<string, AnyRecord[]>();
+  const agentIds = new Set<string>();
+  for (const message of messages) {
+    const agentId = message.toolUseResult?.agentId;
+    if (agentId) {
+      agentIds.add(String(agentId));
+    }
+  }
+  for (const agentId of agentIds) {
+    const agentFileName = `agent-${agentId}.jsonl`;
+    if (!agentFiles.includes(agentFileName)) {
+      continue;
+    }
+    agentToolsByAgentId.set(agentId, await parseAgentTools(path.join(projectDir, agentFileName)));
+  }
+  for (const message of messages) {
+    const agentId = message.toolUseResult?.agentId;
+    if (!agentId) {
+      continue;
+    }
+    const agentTools = agentToolsByAgentId.get(String(agentId));
+    if (agentTools && agentTools.length > 0) {
+      message.subagentTools = agentTools;
+    }
+  }
+
+  const sortedMessages = messages.sort(
+    (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime(),
+  );
+
+  if (stat) {
+    messagesCache.set(jsonLPath, { mtimeMs: stat.mtimeMs, size: stat.size, sorted: sortedMessages });
+    if (messagesCache.size > MESSAGES_CACHE_MAX) {
+      const oldest = messagesCache.keys().next().value;
+      if (oldest !== undefined) {
+        messagesCache.delete(oldest);
+      }
+    }
+  }
+
+  return sortedMessages;
+}
+
 async function getSessionMessages(
   sessionId: string,
   providerSessionId: string,
@@ -116,68 +199,7 @@ async function getSessionMessages(
       return { messages: [], total: 0, hasMore: false };
     }
 
-    const projectDir = path.dirname(jsonLPath);
-    const files = await fsp.readdir(projectDir);
-    const agentFiles = files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'));
-
-    const messages: AnyRecord[] = [];
-    const agentToolsCache = new Map<string, AnyRecord[]>();
-
-    const fileStream = fs.createReadStream(jsonLPath);
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity,
-    });
-
-    for await (const line of rl) {
-      if (!line.trim()) {
-        continue;
-      }
-
-      try {
-        const entry = JSON.parse(line) as AnyRecord;
-        if (entry.sessionId === providerSessionId) {
-          messages.push(entry);
-        }
-      } catch {
-        // Skip malformed JSONL lines that can happen during concurrent writes.
-      }
-    }
-
-    const agentIds = new Set<string>();
-    for (const message of messages) {
-      const agentId = message.toolUseResult?.agentId;
-      if (agentId) {
-        agentIds.add(String(agentId));
-      }
-    }
-
-    for (const agentId of agentIds) {
-      const agentFileName = `agent-${agentId}.jsonl`;
-      if (!agentFiles.includes(agentFileName)) {
-        continue;
-      }
-
-      const agentFilePath = path.join(projectDir, agentFileName);
-      const tools = await parseAgentTools(agentFilePath);
-      agentToolsCache.set(agentId, tools);
-    }
-
-    for (const message of messages) {
-      const agentId = message.toolUseResult?.agentId;
-      if (!agentId) {
-        continue;
-      }
-
-      const agentTools = agentToolsCache.get(String(agentId));
-      if (agentTools && agentTools.length > 0) {
-        message.subagentTools = agentTools;
-      }
-    }
-
-    const sortedMessages = messages.sort(
-      (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime(),
-    );
+    const sortedMessages = await getSortedMessagesCached(jsonLPath, providerSessionId);
     const total = sortedMessages.length;
 
     if (limit === null) {

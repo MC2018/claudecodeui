@@ -408,13 +408,17 @@ export function useChatSessionState({
     }
   }, [hasMoreMessages, isNearBottom, loadOlderMessages]);
 
+  // Older messages were just prepended. We no longer re-compute scrollTop by
+  // hand here — that one-shot measurement drifted whenever markdown/code/images
+  // below reflowed after this pass, causing the wobble. The browser's native
+  // scroll-anchoring (overflow-anchor: auto) keeps the viewport pinned to the
+  // same visible message across the prepend and any later reflow. We only clear
+  // the flag so the bottom-pin effect knows this growth was a prepend, not a
+  // new message to follow.
   useLayoutEffect(() => {
-    if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) return;
-    const { height, top } = pendingScrollRestoreRef.current;
-    const container = scrollContainerRef.current;
-    const newScrollHeight = container.scrollHeight;
-    container.scrollTop = top + Math.max(newScrollHeight - height, 0);
-    pendingScrollRestoreRef.current = null;
+    if (pendingScrollRestoreRef.current) {
+      pendingScrollRestoreRef.current = null;
+    }
   }, [chatMessages.length]);
 
   // Reset scroll/pagination state on session change

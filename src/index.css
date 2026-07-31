@@ -566,10 +566,16 @@
 @layer components {
   .chat-messages-pane {
     contain: layout style paint;
-    /* We restore scroll position manually when older messages are prepended.
-       Leaving the browser's native scroll-anchoring on makes both adjust the
-       offset at once, which produces the visible wobble. */
-    overflow-anchor: none;
+  }
+
+  /* Skip layout/paint for messages scrolled off-screen. This is the biggest
+     lever for scroll smoothness with a long, un-virtualized history: the
+     browser only renders what is near the viewport. `contain-intrinsic-size`
+     with the `auto` keyword remembers each row's real height once rendered, so
+     the scrollbar stays stable. */
+  .chat-message {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 160px;
   }
 
   .chat-composer-shell {
