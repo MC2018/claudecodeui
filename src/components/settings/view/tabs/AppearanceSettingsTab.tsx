@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DarkModeToggle } from '../../../../shared/view/ui';
@@ -35,6 +36,23 @@ export default function AppearanceSettingsTab({
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
   const { preferences, setPreference } = useUiPreferences();
+
+  // The scale applies by zooming the whole document, so committing on every
+  // drag tick re-zooms the page mid-gesture — the slider moves out from under
+  // the pointer and the UI visibly thrashes. Track the in-progress value
+  // locally and only write the preference once the gesture ends.
+  const [scalePercent, setScalePercent] = useState(() => Math.round(preferences.uiScale * 100));
+
+  useEffect(() => {
+    setScalePercent(Math.round(preferences.uiScale * 100));
+  }, [preferences.uiScale]);
+
+  const commitScale = () => {
+    const next = scalePercent / 100;
+    if (next !== preferences.uiScale) {
+      setPreference('uiScale', next);
+    }
+  };
 
   return (
     <div className="space-y-8">
@@ -85,13 +103,17 @@ export default function AppearanceSettingsTab({
                 min={Math.round(UI_SCALE_MIN * 100)}
                 max={Math.round(UI_SCALE_MAX * 100)}
                 step={5}
-                value={Math.round(preferences.uiScale * 100)}
-                onChange={(event) => setPreference('uiScale', Number(event.target.value) / 100)}
+                value={scalePercent}
+                onChange={(event) => setScalePercent(Number(event.target.value))}
+                onPointerUp={commitScale}
+                onTouchEnd={commitScale}
+                onKeyUp={commitScale}
+                onBlur={commitScale}
                 aria-label={t('appearanceSettings.uiScale.label')}
                 className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
               />
               <span className="w-10 flex-shrink-0 text-right text-sm tabular-nums text-muted-foreground">
-                {Math.round(preferences.uiScale * 100)}%
+                {scalePercent}%
               </span>
             </div>
           </SettingsRow>

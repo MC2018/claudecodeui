@@ -188,11 +188,21 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  // A half-typed message belongs to the conversation it was written in.
+  // Drafts used to be keyed by project alone, so switching between two
+  // sessions in the same project dragged the unsent text along and the
+  // original conversation lost it. Keying by project + session gives each
+  // conversation its own draft, with a per-project "new" slot for text typed
+  // before a session exists. The projectId (not the display name) keeps drafts
+  // stable across renames.
+  const draftSessionId = currentSessionId ?? selectedSession?.id ?? null;
+  const draftKey = selectedProject?.projectId
+    ? `draft_input_${selectedProject.projectId}_${draftSessionId ?? 'new'}`
+    : null;
+
   const [input, setInput] = useState(() => {
-    if (typeof window !== 'undefined' && selectedProject) {
-      // Draft inputs are keyed by the DB projectId so per-project drafts
-      // survive display-name changes.
-      return safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
+    if (typeof window !== 'undefined' && draftKey) {
+      return safeLocalStorage.getItem(draftKey) || '';
     }
     return '';
   });
@@ -210,7 +220,6 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
-  const selectedProjectId = selectedProject?.projectId;
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -762,7 +771,9 @@ export function useChatComposerState({
         textareaRef.current.style.height = 'auto';
       }
 
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+      if (draftKey) {
+        safeLocalStorage.removeItem(draftKey);
+      }
     },
     [
       selectedSession,
@@ -771,6 +782,7 @@ export function useChatComposerState({
       codexModel,
       currentSessionId,
       cursorModel,
+      draftKey,
       executeCommand,
       geminiModel,
       opencodeModel,
@@ -808,28 +820,31 @@ export function useChatComposerState({
     inputValueRef.current = input;
   }, [input]);
 
+  // Swap the composer to the incoming conversation's own draft. Keyed on
+  // `draftKey`, so this now also fires when only the session changes — that is
+  // what stops the previous conversation's text from following the user.
   useEffect(() => {
-    if (!selectedProjectId) {
+    if (!draftKey) {
       return;
     }
-    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProjectId}`) || '';
+    const savedInput = safeLocalStorage.getItem(draftKey) || '';
     setInput((previous) => {
       const next = previous === savedInput ? previous : savedInput;
       inputValueRef.current = next;
       return next;
     });
-  }, [selectedProjectId]);
+  }, [draftKey]);
 
   useEffect(() => {
-    if (!selectedProjectId) {
+    if (!draftKey) {
       return;
     }
     if (input !== '') {
-      safeLocalStorage.setItem(`draft_input_${selectedProjectId}`, input);
+      safeLocalStorage.setItem(draftKey, input);
     } else {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+      safeLocalStorage.removeItem(draftKey);
     }
-  }, [input, selectedProjectId]);
+  }, [input, draftKey]);
 
   useEffect(() => {
     if (!textareaRef.current) {
