@@ -139,6 +139,14 @@ export type CommandModalPayload = {
   data: HelpCommandData | ModelCommandData | CostCommandData | StatusCommandData;
 };
 
+/**
+ * Must match the per-file limit multer enforces on
+ * `POST /api/projects/:projectId/upload-images`. Kept here so the composer can
+ * reject an oversized image with a useful message instead of spending the
+ * upload and getting an opaque rejection back.
+ */
+const IMAGE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
 const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
 };
@@ -608,6 +616,24 @@ export function useChatComposerState({
           formData.append('images', file);
         });
 
+        // Catch the server's own size limit before spending the upload, and say
+        // which file is at fault — the server rejects the whole batch otherwise
+        // and the reason used to be invisible.
+        const oversized = attachedImages.filter((file) => file.size > IMAGE_UPLOAD_MAX_BYTES);
+        if (oversized.length > 0) {
+          const describe = oversized
+            .map((file) => `${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`)
+            .join(', ');
+          addMessage({
+            type: 'error',
+            content:
+              `Image too large to upload: ${describe}. `
+              + `The limit is ${Math.round(IMAGE_UPLOAD_MAX_BYTES / (1024 * 1024))} MB per image.`,
+            timestamp: new Date(),
+          });
+          return;
+        }
+
         try {
           const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
             method: 'POST',
@@ -616,7 +642,21 @@ export function useChatComposerState({
           });
 
           if (!response.ok) {
-            throw new Error('Failed to upload images');
+            // Surface what the server actually said. Previously this threw a
+            // fixed string, so a size rejection, an expired session (401), or a
+            // proxy limit all looked identical — "nothing happened".
+            let detail = '';
+            try {
+              const body = await response.json();
+              detail = typeof body?.error === 'string' ? body.error : '';
+            } catch {
+              detail = '';
+            }
+            throw new Error(
+              detail
+                ? `${detail} (HTTP ${response.status})`
+                : `Upload rejected with HTTP ${response.status}`,
+            );
           }
 
           const result = await response.json();
