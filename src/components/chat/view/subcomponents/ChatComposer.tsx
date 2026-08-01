@@ -304,7 +304,10 @@ export default function ChatComposer({
           {/* In mobile landscape (lscompact) the body and footer sit on one row
               to reclaim vertical space; portrait keeps them stacked. */}
           <div className="lscompact:flex lscompact:items-end">
-          <PromptInputBody className="lscompact:min-w-0 lscompact:flex-1">
+          {/* A hard floor on the text field: `min-w-0` alone let flexbox shrink
+              it to nothing when the toolbar wanted the whole row, which made
+              typed text render one character per line. */}
+          <PromptInputBody className="lscompact:min-w-[12rem] lscompact:flex-1">
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
               <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
                 {renderInputWithMentions(input)}

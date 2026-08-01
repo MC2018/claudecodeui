@@ -15,9 +15,18 @@ export default {
     },
     extend: {
       screens: {
-        // Phones in landscape: short viewport height in landscape orientation.
-        // Excludes desktops (tall) so the compact composer only kicks in on mobile.
-        lscompact: { raw: '(orientation: landscape) and (max-height: 600px)' },
+        // Phones in genuine landscape: short viewport, and wide enough that the
+        // composer can actually fit a text field beside its toolbar.
+        //
+        // The `min-width` is essential, not cosmetic. When the on-screen
+        // keyboard opens in PORTRAIT the visible viewport becomes roughly
+        // 412x390 CSS px — wider than it is tall — so it satisfies both
+        // `orientation: landscape` and `max-height`, and the single-row layout
+        // fired while the user was typing in portrait. The toolbar then took
+        // the full width and the textarea collapsed to about one character,
+        // rendering typed text vertically. Real phone landscape is ~900px wide,
+        // so the width gate separates the two cases cleanly.
+        lscompact: { raw: '(orientation: landscape) and (max-height: 600px) and (min-width: 700px)' },
       },
       fontFamily: {
         sans: ['"Encode Sans"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
