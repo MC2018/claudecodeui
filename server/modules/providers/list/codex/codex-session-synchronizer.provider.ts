@@ -114,10 +114,11 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       return {
         sessionId,
         projectPath,
+        isSubagent: payload ? this.isSubagentSessionMeta(payload) : false,
       };
     });
 
-    if (!parsed) {
+    if (!parsed || parsed.isSubagent) {
       return null;
     }
 
@@ -133,7 +134,23 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       };
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
+    // Sessions started by sending a message from cloudcli carry a distinct
+    // app-allocated session_id mapped to the provider id. For these we title the
+    // conversation from the first user message the user typed, instead of the
+    // generic "Untitled Codex Session" placeholder. Sessions discovered purely
+    // by indexing (session_id === provider_session_id) keep the existing
+    // thread_name/last-agent-message setup below.
+    const isAppCreated =
+      existingSession != null &&
+      existingSession.provider_session_id != null &&
+      existingSession.session_id !== existingSession.provider_session_id;
+
+    let sessionName = isAppCreated
+      ? await this.extractFirstUserMessageFromStart(filePath)
+      : undefined;
+    if (!sessionName) {
+      sessionName = nameMap.get(parsed.sessionId);
+    }
     if (!sessionName) {
       sessionName = await this.extractLastAgentMessageFromEnd(filePath);
     }
@@ -142,6 +159,68 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       ...parsed,
       sessionName: normalizeSessionName(sessionName, 'Untitled Codex Session'),
     };
+  }
+
+  /**
+   * Returns true when a session_meta payload belongs to a Codex sub-agent
+   * thread (Codex >=0.144 collaboration spawn_agent, review, compact, etc.).
+   * Sub-agent rollouts live in the same sessions tree as user sessions, so
+   * they must be skipped here to stay out of the sidebar — the Codex
+   * equivalent of the Claude synchronizer's subagent transcript skip.
+   * Top-level sessions carry thread_source "user" and a string source
+   * ("exec"/"cli"); sub-agents carry thread_source "subagent" and an object
+   * source keyed by "subagent".
+   */
+  private isSubagentSessionMeta(payload: Record<string, unknown>): boolean {
+    if (payload.thread_source === 'subagent') {
+      return true;
+    }
+
+    const source = payload.source;
+    return typeof source === 'object' && source !== null && 'subagent' in source;
+  }
+
+  /**
+   * Returns the first user message text in a Codex transcript, used to title
+   * app-created sessions from the prompt the user sent from cloudcli.
+   *
+   * Reads the `event_msg`/`user_message` payload rather than the raw
+   * `response_item` user turn so injected `<environment_context>` boilerplate is
+   * never mistaken for the user's prompt.
+   */
+  private async extractFirstUserMessageFromStart(filePath: string): Promise<string | undefined> {
+    try {
+      const content = await readFile(filePath, 'utf8');
+      const lines = content.split(/\r?\n/);
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          continue;
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const data = parsed as Record<string, unknown>;
+        const eventType = typeof data.type === 'string' ? data.type : undefined;
+        const payload = data.payload as Record<string, unknown> | undefined;
+        const payloadType = typeof payload?.type === 'string' ? payload.type : undefined;
+        const message = typeof payload?.message === 'string' ? payload.message : undefined;
+
+        if (eventType === 'event_msg' && payloadType === 'user_message' && message?.trim()) {
+          return message;
+        }
+      }
+    } catch {
+      // Ignore missing/unreadable files so sync can continue.
+    }
+
+    return undefined;
   }
 
   private async extractLastAgentMessageFromEnd(filePath: string): Promise<string | undefined> {

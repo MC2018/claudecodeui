@@ -5,11 +5,13 @@ import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
 import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
+import { QuickSettingsPanel } from '../quick-settings-panel';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
+import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
 
 type RunningSessionApiItem = {
@@ -76,12 +78,24 @@ function AppContentInner() {
     registerOptimisticSession,
     sidebarSharedProps,
     handleNewSession,
+    handleProjectSelect,
   } = useProjectsState({
     sessionId,
     navigate,
     subscribe,
     isMobile,
     activeSessions: processingSessions,
+  });
+
+  // Queued messages for sessions that finish while another session (or none)
+  // is being viewed are sent from here; the viewed session's composer handles
+  // its own queue.
+  useQueuedMessageAutoSend({
+    processingSessions,
+    activeSessionId: selectedSession?.id ?? sessionId ?? null,
+    ws,
+    sendMessage,
+    markSessionProcessing,
   });
 
   const refreshRunningSessions = useCallback(async () => {
@@ -249,6 +263,8 @@ function AppContentInner() {
           onShowSettings={openSettings}
           externalMessageUpdate={externalMessageUpdate}
           newSessionTrigger={newSessionTrigger}
+          onProjectSelect={handleProjectSelect}
+          onProjectsRefresh={() => void refreshProjectsSilently()}
         />
       </div>
 
@@ -258,6 +274,8 @@ function AppContentInner() {
         onOpenSettings={() => openSettings()}
         onShowTab={setActiveTab}
       />
+
+      <QuickSettingsPanel />
     </div>
   );
 }

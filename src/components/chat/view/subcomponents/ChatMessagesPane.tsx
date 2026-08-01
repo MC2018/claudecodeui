@@ -16,6 +16,7 @@ import MessageComponent from './MessageComponent';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
 import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
+import ChatExportMenu from './ChatExportMenu';
 
 interface ChatMessagesPaneProps {
   scrollContainerRef: RefObject<HTMLDivElement>;
@@ -24,6 +25,8 @@ interface ChatMessagesPaneProps {
   isLoadingSessionMessages: boolean;
   /** True while the viewed session has an active provider run in flight. */
   isProcessing?: boolean;
+  /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
+  hasActivityIndicator?: boolean;
   chatMessages: ChatMessage[];
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
@@ -36,8 +39,6 @@ interface ChatMessagesPaneProps {
   setCursorModel: (model: string) => void;
   codexModel: string;
   setCodexModel: (model: string) => void;
-  geminiModel: string;
-  setGeminiModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -74,6 +75,7 @@ function ChatMessagesPane({
   onTouchMove,
   isLoadingSessionMessages,
   isProcessing = false,
+  hasActivityIndicator = false,
   chatMessages,
   selectedSession,
   currentSessionId,
@@ -86,8 +88,6 @@ function ChatMessagesPane({
   setCursorModel,
   codexModel,
   setCodexModel,
-  geminiModel,
-  setGeminiModel,
   opencodeModel,
   setOpenCodeModel,
   providerModelCatalog,
@@ -163,13 +163,17 @@ function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      // The activity indicator ("Reasoning…", h-8) floats over the top edge of
-      // the composer and overlaps the end of the transcript, cutting off the
-      // last row. Reserve a constant buffer that clears it — constant rather
-      // than toggled on `isProcessing`, so starting/stopping a run never
-      // changes scrollHeight and shifts the view.
-      className="chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-14 pt-3 sm:pb-16 sm:pt-4"
+      className={`chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-3 sm:pt-4 ${
+        hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
+      }`}
     >
+      {chatMessages.length > 0 && (
+        <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex justify-end sm:px-4">
+          <div className="pointer-events-auto">
+            <ChatExportMenu messages={chatMessages} sessionTitle={selectedSession?.title} />
+          </div>
+        </div>
+      )}
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
@@ -191,8 +195,6 @@ function ChatMessagesPane({
           setCursorModel={setCursorModel}
           codexModel={codexModel}
           setCodexModel={setCodexModel}
-          geminiModel={geminiModel}
-          setGeminiModel={setGeminiModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
