@@ -17,7 +17,9 @@ import {
 } from '../constants/providerEffort';
 
 const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
-  claude: 'default',
+  // Fork preference: default to Opus (see the matching DEFAULT in
+  // claude-models.provider.ts). Used only when nothing is stored yet.
+  claude: 'opus',
   cursor: 'gpt-5.3-codex',
   codex: 'gpt-5.4',
   opencode: 'anthropic/claude-sonnet-4-5',

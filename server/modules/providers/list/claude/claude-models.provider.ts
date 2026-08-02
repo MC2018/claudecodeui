@@ -104,7 +104,13 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
       description: 'Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok',
     },
   ],
-  DEFAULT: 'default',
+  // Fork preference: pre-select Opus rather than the Claude Code default.
+  // `opus` is an alias the CLI resolves to the current Opus generation (the
+  // option labels below are upstream's and lag the model line). Upstream ships
+  // 'default' here; we changed it because the default plus an accidental Fable
+  // selection was burning subscription limits unnoticed — Fable is documented
+  // right in this catalog as using limits about twice as fast as Opus.
+  DEFAULT: 'opus',
 };
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
