@@ -12,10 +12,17 @@ import type {
 import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
-import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
+import type { MarkSessionProcessing, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
-import { safeLocalStorage } from '../utils/chatStorage';
+import {
+  clearQueuedMessage,
+  readQueuedMessage,
+  safeLocalStorage,
+  writeQueuedMessage,
+  type QueuedSendOptions,
+} from '../utils/chatStorage';
 import type {
+  ChatAttachment,
   ChatMessage,
   PendingPermissionRequest,
   PermissionMode,
@@ -34,12 +41,15 @@ interface UseChatComposerStateArgs {
   provider: LLMProvider;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
-  cursorModel: string;
-  claudeModel: string;
-  codexModel: string;
-  geminiModel: string;
-  opencodeModel: string;
+  resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
+  /**
+   * Model every send and command carries: the open session's model when there
+   * is one, otherwise the user's per-provider selection.
+   */
+  currentProviderModel: string;
+  currentProviderEffort: string;
   isLoading: boolean;
+  processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
   sendMessage: (message: unknown) => void;
@@ -139,16 +149,70 @@ export type CommandModalPayload = {
   data: HelpCommandData | ModelCommandData | CostCommandData | StatusCommandData;
 };
 
-/**
- * Must match the per-file limit multer enforces on
- * `POST /api/projects/:projectId/upload-images`. Kept here so the composer can
- * reject an oversized image with a useful message instead of spending the
- * upload and getting an opaque rejection back.
- */
-const IMAGE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
-
 const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
+};
+
+const MAX_ATTACHMENT_COUNT = 10;
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+
+const isImageAttachment = (attachment: ChatAttachment) => {
+  if (attachment.mimeType?.startsWith('image/')) return true;
+  return /\.(gif|jpe?g|png|svg|webp)$/i.test(attachment.path || attachment.name || '');
+};
+
+const uploadAttachmentFiles = async (files: File[]): Promise<unknown[]> => {
+  if (files.length === 0) {
+    return [];
+  }
+
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append('files', file);
+  });
+
+  const response = await authenticatedFetch('/api/assets/files', {
+    method: 'POST',
+    headers: {},
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error || 'Failed to upload files');
+  }
+
+  const result = await response.json();
+  if (!Array.isArray(result.attachments) || result.attachments.length !== files.length) {
+    throw new Error('File upload returned an incomplete result');
+  }
+  return result.attachments;
+};
+
+export type QueuedDraft = {
+  content: string;
+  /** Browser files retained while this composer stays mounted, for editing. */
+  attachments: File[];
+  /** JSON-safe descriptors uploaded when the message is queued. */
+  uploadedAttachments?: unknown[];
+  /**
+   * Send options snapshotted at queue time. Persisted with the draft so the
+   * app-level auto-send can dispatch the message with the right model and
+   * permission settings while another session is being viewed.
+   */
+  options?: QueuedSendOptions;
+};
+
+const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
+  const saved = readQueuedMessage(sessionKey);
+  return saved
+    ? {
+        content: saved.content,
+        attachments: [],
+        uploadedAttachments: saved.attachments ?? saved.images,
+        options: saved.options,
+      }
+    : null;
 };
 
 const getNotificationSessionSummary = (
@@ -176,12 +240,11 @@ export function useChatComposerState({
   provider,
   permissionMode,
   cyclePermissionMode,
-  cursorModel,
-  claudeModel,
-  codexModel,
-  geminiModel,
-  opencodeModel,
+  resolvePermissionModeForProvider,
+  currentProviderModel,
+  currentProviderEffort,
   isLoading,
+  processingSessions,
   canAbortSession,
   tokenBudget,
   sendMessage,
@@ -196,27 +259,17 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
-  // A half-typed message belongs to the conversation it was written in.
-  // Drafts used to be keyed by project alone, so switching between two
-  // sessions in the same project dragged the unsent text along and the
-  // original conversation lost it. Keying by project + session gives each
-  // conversation its own draft, with a per-project "new" slot for text typed
-  // before a session exists. The projectId (not the display name) keeps drafts
-  // stable across renames.
-  const draftSessionId = currentSessionId ?? selectedSession?.id ?? null;
-  const draftKey = selectedProject?.projectId
-    ? `draft_input_${selectedProject.projectId}_${draftSessionId ?? 'new'}`
-    : null;
-
   const [input, setInput] = useState(() => {
-    if (typeof window !== 'undefined' && draftKey) {
-      return safeLocalStorage.getItem(draftKey) || '';
+    if (typeof window !== 'undefined' && selectedProject) {
+      // Draft inputs are keyed by the DB projectId so per-project drafts
+      // survive display-name changes.
+      return safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
     }
     return '';
   });
-  const [attachedImages, setAttachedImages] = useState<File[]>([]);
-  const [uploadingImages, setUploadingImages] = useState<Map<string, number>>(new Map());
-  const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [uploadingFiles, setUploadingFiles] = useState<Map<string, number>>(new Map());
+  const [fileErrors, setFileErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
 
@@ -225,9 +278,33 @@ export function useChatComposerState({
   const textareaLineHeightRef = useRef<number | null>(null);
   const lastAutosizedInputRef = useRef<string | null>(null);
   const handleSubmitRef = useRef<
-    ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
+    ((
+      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
+      queuedSubmission?: QueuedDraft,
+    ) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  const selectedProjectId = selectedProject?.projectId;
+  // Prefer the stable backend-allocated id (selectedSession.id) but fall back
+  // to currentSessionId for a just-established session that hasn't been
+  // handed back to the parent's `selectedSession` prop yet.
+  const sessionKey = selectedSession?.id || currentSessionId || null;
+  const sessionKeyRef = useRef(sessionKey);
+  const processingSessionsRef = useRef<SessionActivityMap | undefined>(processingSessions);
+  sessionKeyRef.current = sessionKey;
+  processingSessionsRef.current = processingSessions;
+
+  const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
+    if (typeof window === 'undefined' || !sessionKey) {
+      return null;
+    }
+    return restoreQueuedDraft(sessionKey);
+  });
+  // Which session the in-memory `queuedDraft` belongs to. On a session switch
+  // there is one commit where `sessionKey` already points at the new session
+  // while `queuedDraft` still holds the old session's draft; the persistence
+  // effect must not write across that gap.
+  const queuedDraftSessionRef = useRef<string | null>(sessionKey);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -343,17 +420,9 @@ export function useChatComposerState({
         const context = {
           projectPath: selectedProject.fullPath || selectedProject.path,
           projectId: selectedProject.projectId,
-          sessionId: currentSessionId,
+          sessionId: currentSessionId || selectedSession?.id || null,
           provider,
-          model: provider === 'cursor'
-            ? cursorModel
-            : provider === 'codex'
-              ? codexModel
-              : provider === 'gemini'
-                ? geminiModel
-                : provider === 'opencode'
-                  ? opencodeModel
-                  : claudeModel,
+          model: currentProviderModel,
           tokenUsage: tokenBudget,
         };
 
@@ -402,17 +471,14 @@ export function useChatComposerState({
       }
     },
     [
-      claudeModel,
-      codexModel,
+      currentProviderModel,
       currentSessionId,
-      cursorModel,
-      geminiModel,
-      opencodeModel,
       handleBuiltInCommand,
       handleCustomCommand,
       input,
       provider,
       selectedProject,
+      selectedSession?.id,
       addMessage,
       tokenBudget,
     ],
@@ -492,7 +558,7 @@ export function useChatComposerState({
     lastAutosizedInputRef.current = target.value;
   }, []);
 
-  const handleImageFiles = useCallback((files: File[]) => {
+  const handleAttachmentFiles = useCallback((files: File[]) => {
     const validFiles = files.filter((file) => {
       try {
         if (!file || typeof file !== 'object') {
@@ -500,15 +566,11 @@ export function useChatComposerState({
           return false;
         }
 
-        if (!file.type || !file.type.startsWith('image/')) {
-          return false;
-        }
-
-        if (!file.size || file.size > 5 * 1024 * 1024) {
+        if (file.size > MAX_ATTACHMENT_SIZE) {
           const fileName = file.name || 'Unknown file';
-          setImageErrors((previous) => {
+          setFileErrors((previous) => {
             const next = new Map(previous);
-            next.set(fileName, 'File too large (max 5MB)');
+            next.set(fileName, 'File too large (max 10MB)');
             return next;
           });
           return false;
@@ -522,7 +584,7 @@ export function useChatComposerState({
     });
 
     if (validFiles.length > 0) {
-      setAttachedImages((previous) => [...previous, ...validFiles].slice(0, 5));
+      setAttachedFiles((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
     }
   }, []);
 
@@ -536,7 +598,7 @@ export function useChatComposerState({
         }
         const file = item.getAsFile();
         if (file) {
-          handleImageFiles([file]);
+          handleAttachmentFiles([file]);
         }
       });
 
@@ -544,31 +606,172 @@ export function useChatComposerState({
         const files = Array.from(event.clipboardData.files);
         const imageFiles = files.filter((file) => file.type.startsWith('image/'));
         if (imageFiles.length > 0) {
-          handleImageFiles(imageFiles);
+          handleAttachmentFiles(imageFiles);
         }
       }
     },
-    [handleImageFiles],
+    [handleAttachmentFiles],
   );
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
-    accept: {
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'],
-    },
-    maxSize: 5 * 1024 * 1024,
-    maxFiles: 5,
-    onDrop: handleImageFiles,
+    maxSize: MAX_ATTACHMENT_SIZE,
+    maxFiles: MAX_ATTACHMENT_COUNT,
+    onDrop: handleAttachmentFiles,
     noClick: true,
     noKeyboard: true,
   });
 
+  // Snapshot of everything `chat.send` needs beyond the text itself. Built at
+  // send time for immediate sends and at queue time for queued ones, so a
+  // queued message keeps the provider settings it was composed under even if
+  // it is later dispatched outside this composer (app-level auto-send).
+  const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
+    const getToolsSettings = () => {
+      try {
+        const settingsKey =
+          provider === 'cursor'
+            ? 'cursor-tools-settings'
+            : provider === 'codex'
+              ? 'codex-settings'
+              : provider === 'opencode'
+                  ? 'opencode-settings'
+                : 'claude-settings';
+        const savedSettings = safeLocalStorage.getItem(settingsKey);
+        if (savedSettings) {
+          return JSON.parse(savedSettings);
+        }
+      } catch (error) {
+        console.error('Error loading tools settings:', error);
+      }
+
+      return {
+        allowedTools: [],
+        disallowedTools: [],
+        skipPermissions: false,
+      };
+    };
+
+    const toolsSettings = getToolsSettings();
+
+    return {
+      model: currentProviderModel,
+      effort: currentProviderEffort,
+      permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
+      toolsSettings,
+      skipPermissions: toolsSettings?.skipPermissions || false,
+      sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
+    };
+  }, [
+    currentProviderEffort,
+    currentProviderModel,
+    permissionMode,
+    provider,
+    resolvePermissionModeForProvider,
+    selectedSession,
+  ]);
+
   const handleSubmit = useCallback(
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
+      queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
-      const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
+      const currentInput = queuedSubmission?.content ?? inputValueRef.current;
+      const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
+      const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
+      if (
+        (
+          !currentInput.trim()
+          && currentAttachments.length === 0
+          && previouslyUploadedAttachments.length === 0
+        )
+        || !selectedProject
+      ) {
+        return;
+      }
+
+      // A turn is already in flight: stash this message instead of sending it.
+      // Upload attached files now so the queued record contains durable image
+      // descriptors that can be sent even if another session is open later.
+      if (isLoading) {
+        // A run can restart in the tiny gap between scheduling and flushing a
+        // queued submission. Put the same durable draft back without uploading
+        // its files again.
+        if (queuedSubmission) {
+          queuedDraftSessionRef.current = sessionKey;
+          setQueuedDraft(queuedSubmission);
+          return;
+        }
+
+        const queuedOptions = buildSendOptions(currentInput);
+        const queuedSessionKey = sessionKey;
+        let uploadedAttachments: unknown[] = [];
+        try {
+          uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          console.error('Queued file upload failed:', error);
+          addMessage({
+            type: 'error',
+            content: `Failed to upload files: ${message}`,
+            timestamp: new Date(),
+          });
+          return;
+        }
+
+        const durableDraft: QueuedDraft = {
+          content: currentInput,
+          attachments: currentAttachments,
+          uploadedAttachments,
+          options: queuedOptions,
+        };
+        if (queuedSessionKey) {
+          // Write the claim ticket synchronously after upload; this closes the
+          // gap before React's persistence effect runs.
+          writeQueuedMessage(queuedSessionKey, {
+            content: durableDraft.content,
+            options: durableDraft.options,
+            attachments: durableDraft.uploadedAttachments,
+          });
+        }
+
+        // The upload is asynchronous. If the user changed sessions while it
+        // was running, persist/send against the session where Queue was
+        // pressed rather than putting the draft into the newly opened chat.
+        if (queuedSessionKey && sessionKeyRef.current !== queuedSessionKey) {
+          if (
+            processingSessionsRef.current
+            && !processingSessionsRef.current.has(queuedSessionKey)
+          ) {
+            clearQueuedMessage(queuedSessionKey);
+            sendMessage({
+              type: 'chat.send',
+              sessionId: queuedSessionKey,
+              content: durableDraft.content,
+              options: {
+                ...(durableDraft.options ?? {}),
+                attachments: durableDraft.uploadedAttachments ?? [],
+              },
+            });
+            onSessionProcessing?.(queuedSessionKey, { statusText: null, canInterrupt: true });
+          }
+          return;
+        }
+
+        queuedDraftSessionRef.current = queuedSessionKey;
+        setQueuedDraft(durableDraft);
+        setInput('');
+        inputValueRef.current = '';
+        setAttachedFiles([]);
+        setUploadingFiles(new Map());
+        setFileErrors(new Map());
+        resetCommandMenuState();
+        setIsTextareaExpanded(false);
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+        // selectedProject is guaranteed by the guard at the top of handleSubmit.
+        safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
         return;
       }
 
@@ -595,9 +798,9 @@ export function useChatComposerState({
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
           setInput('');
           inputValueRef.current = '';
-          setAttachedImages([]);
-          setUploadingImages(new Map());
-          setImageErrors(new Map());
+          setAttachedFiles([]);
+          setUploadingFiles(new Map());
+          setFileErrors(new Map());
           resetCommandMenuState();
           setIsTextareaExpanded(false);
           if (textareaRef.current) {
@@ -609,64 +812,16 @@ export function useChatComposerState({
 
       const messageContent = currentInput;
 
-      let uploadedImages: unknown[] = [];
-      if (attachedImages.length > 0) {
-        const formData = new FormData();
-        attachedImages.forEach((file) => {
-          formData.append('images', file);
-        });
-
-        // Catch the server's own size limit before spending the upload, and say
-        // which file is at fault — the server rejects the whole batch otherwise
-        // and the reason used to be invisible.
-        const oversized = attachedImages.filter((file) => file.size > IMAGE_UPLOAD_MAX_BYTES);
-        if (oversized.length > 0) {
-          const describe = oversized
-            .map((file) => `${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`)
-            .join(', ');
-          addMessage({
-            type: 'error',
-            content:
-              `Image too large to upload: ${describe}. `
-              + `The limit is ${Math.round(IMAGE_UPLOAD_MAX_BYTES / (1024 * 1024))} MB per image.`,
-            timestamp: new Date(),
-          });
-          return;
-        }
-
+      let uploadedAttachments = previouslyUploadedAttachments;
+      if (uploadedAttachments.length === 0 && currentAttachments.length > 0) {
         try {
-          const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
-            method: 'POST',
-            headers: {},
-            body: formData,
-          });
-
-          if (!response.ok) {
-            // Surface what the server actually said. Previously this threw a
-            // fixed string, so a size rejection, an expired session (401), or a
-            // proxy limit all looked identical — "nothing happened".
-            let detail = '';
-            try {
-              const body = await response.json();
-              detail = typeof body?.error === 'string' ? body.error : '';
-            } catch {
-              detail = '';
-            }
-            throw new Error(
-              detail
-                ? `${detail} (HTTP ${response.status})`
-                : `Upload rejected with HTTP ${response.status}`,
-            );
-          }
-
-          const result = await response.json();
-          uploadedImages = result.images;
+          uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Image upload failed:', error);
+          console.error('File upload failed:', error);
           addMessage({
             type: 'error',
-            content: `Failed to upload images: ${message}`,
+            content: `Failed to upload files: ${message}`,
             timestamp: new Date(),
           });
           return;
@@ -722,10 +877,12 @@ export function useChatComposerState({
         });
       }
 
+      const attachmentRecords = uploadedAttachments as ChatAttachment[];
       const userMessage: ChatMessage = {
         type: 'user',
         content: currentInput,
-        images: uploadedImages as any,
+        images: attachmentRecords.filter(isImageAttachment),
+        files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
         timestamp: new Date(),
       };
 
@@ -741,45 +898,6 @@ export function useChatComposerState({
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
 
-      const getToolsSettings = () => {
-        try {
-          const settingsKey =
-            provider === 'cursor'
-              ? 'cursor-tools-settings'
-              : provider === 'codex'
-                ? 'codex-settings'
-                : provider === 'gemini'
-                  ? 'gemini-settings'
-                  : provider === 'opencode'
-                    ? 'opencode-settings'
-                  : 'claude-settings';
-          const savedSettings = safeLocalStorage.getItem(settingsKey);
-          if (savedSettings) {
-            return JSON.parse(savedSettings);
-          }
-        } catch (error) {
-          console.error('Error loading tools settings:', error);
-        }
-
-        return {
-          allowedTools: [],
-          disallowedTools: [],
-          skipPermissions: false,
-        };
-      };
-
-      const toolsSettings = getToolsSettings();
-      const model =
-        provider === 'cursor'
-          ? cursorModel
-          : provider === 'codex'
-            ? codexModel
-            : provider === 'gemini'
-              ? geminiModel
-              : provider === 'opencode'
-                ? opencodeModel
-                : claudeModel;
-
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
       // session row; `options` only carries composer-level preferences.
@@ -788,53 +906,40 @@ export function useChatComposerState({
         sessionId: targetSessionId,
         content: messageContent,
         options: {
-          model,
-          // Codex has no plan mode; downgrade rather than sending an
-          // unsupported value to its runtime.
-          permissionMode: provider === 'codex' && permissionMode === 'plan' ? 'default' : permissionMode,
-          toolsSettings,
-          skipPermissions: toolsSettings?.skipPermissions || false,
-          sessionSummary,
-          images: uploadedImages,
+          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          attachments: uploadedAttachments,
         },
       });
 
       setInput('');
       inputValueRef.current = '';
       resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
+      setAttachedFiles([]);
+      setUploadingFiles(new Map());
+      setFileErrors(new Map());
       setIsTextareaExpanded(false);
 
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
 
-      if (draftKey) {
-        safeLocalStorage.removeItem(draftKey);
-      }
+      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
     },
     [
       selectedSession,
-      attachedImages,
-      claudeModel,
-      codexModel,
+      attachedFiles,
+      buildSendOptions,
       currentSessionId,
-      cursorModel,
-      draftKey,
       executeCommand,
-      geminiModel,
-      opencodeModel,
       isLoading,
       onSessionProcessing,
       onSessionEstablished,
-      permissionMode,
       provider,
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,
       sendMessage,
+      sessionKey,
       addMessage,
       setIsUserScrolledUp,
       slashCommands,
@@ -844,6 +949,65 @@ export function useChatComposerState({
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
+
+  // Once the in-flight turn ends, replay the queued draft through the normal
+  // submit path. The draft itself is passed directly so submission never
+  // depends on React committing restored attachment state first.
+  const wasLoadingRef = useRef(isLoading);
+  const flushSessionKeyRef = useRef(sessionKey);
+  useEffect(() => {
+    const wasLoading = wasLoadingRef.current;
+    wasLoadingRef.current = isLoading;
+
+    // A session switch changes which session `isLoading` describes, so this
+    // transition says nothing about the queued draft's own session. Never
+    // flush across it — the swap effect below replaces `queuedDraft` with the
+    // new session's saved draft right after this.
+    if (flushSessionKeyRef.current !== sessionKey) {
+      flushSessionKeyRef.current = sessionKey;
+      return;
+    }
+
+    if (isLoading || !queuedDraft) {
+      return;
+    }
+
+    // Turn just ended in this session: flush immediately. Otherwise this is a
+    // saved draft restored into an apparently idle session — hold it briefly
+    // so the `chat_subscribed` ack can flip `isLoading` if a run is actually
+    // still live (the cleanup below cancels the send in that case).
+    const delay = wasLoading ? 0 : 750;
+    const timer = setTimeout(() => {
+      // The saved key is the claim ticket shared with the app-level auto-send
+      // (which handles sessions that finish while not viewed). If it's gone,
+      // the message was already dispatched — don't send it twice.
+      if (sessionKey && !readQueuedMessage(sessionKey)) {
+        setQueuedDraft(null);
+        return;
+      }
+      setQueuedDraft(null);
+      setInput(queuedDraft.content);
+      inputValueRef.current = queuedDraft.content;
+      setAttachedFiles(queuedDraft.attachments);
+      handleSubmitRef.current?.(createFakeSubmitEvent(), queuedDraft);
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [isLoading, queuedDraft, sessionKey, setInput]);
+
+  const editQueuedDraft = useCallback(() => {
+    if (!queuedDraft) {
+      return;
+    }
+    setQueuedDraft(null);
+    setInput(queuedDraft.content);
+    inputValueRef.current = queuedDraft.content;
+    setAttachedFiles(queuedDraft.attachments);
+    textareaRef.current?.focus();
+  }, [queuedDraft]);
+
+  const deleteQueuedDraft = useCallback(() => {
+    setQueuedDraft(null);
+  }, []);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
@@ -860,31 +1024,63 @@ export function useChatComposerState({
     inputValueRef.current = input;
   }, [input]);
 
-  // Swap the composer to the incoming conversation's own draft. Keyed on
-  // `draftKey`, so this now also fires when only the session changes — that is
-  // what stops the previous conversation's text from following the user.
   useEffect(() => {
-    if (!draftKey) {
+    if (!selectedProjectId) {
       return;
     }
-    const savedInput = safeLocalStorage.getItem(draftKey) || '';
+    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProjectId}`) || '';
     setInput((previous) => {
       const next = previous === savedInput ? previous : savedInput;
       inputValueRef.current = next;
       return next;
     });
-  }, [draftKey]);
+  }, [selectedProjectId]);
 
   useEffect(() => {
-    if (!draftKey) {
+    if (!selectedProjectId) {
       return;
     }
     if (input !== '') {
-      safeLocalStorage.setItem(draftKey, input);
+      safeLocalStorage.setItem(`draft_input_${selectedProjectId}`, input);
     } else {
-      safeLocalStorage.removeItem(draftKey);
+      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
     }
-  }, [input, draftKey]);
+  }, [input, selectedProjectId]);
+
+  // Persist the queued draft under its session's key. Must be defined BEFORE
+  // the swap effect below: on a session switch there is one commit where
+  // `sessionKey` already points at the new session while `queuedDraft` (and
+  // the owner ref) still describe the old one — the ref mismatch makes this
+  // effect skip that commit instead of writing/clearing across sessions.
+  useEffect(() => {
+    if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
+      return;
+    }
+    if (
+      queuedDraft
+      && (queuedDraft.content.trim() || (queuedDraft.uploadedAttachments?.length ?? 0) > 0)
+    ) {
+      writeQueuedMessage(sessionKey, {
+        content: queuedDraft.content,
+        options: queuedDraft.options,
+        attachments: queuedDraft.uploadedAttachments,
+      });
+    } else {
+      clearQueuedMessage(sessionKey);
+    }
+  }, [queuedDraft, sessionKey]);
+
+  // Switching sessions swaps in that session's queued draft. Browser File
+  // objects are local to the mounted composer, while their already-uploaded
+  // descriptors restore from storage and remain sendable.
+  useEffect(() => {
+    queuedDraftSessionRef.current = sessionKey;
+    if (!sessionKey) {
+      setQueuedDraft(null);
+      return;
+    }
+    setQueuedDraft(restoreQueuedDraft(sessionKey));
+  }, [sessionKey]);
 
   useEffect(() => {
     if (!textareaRef.current) {
@@ -1040,9 +1236,6 @@ export function useChatComposerState({
         sendMessage({
           type: 'chat.permission-response',
           requestId,
-          // Lets the server tell the user's other open devices to drop this
-          // prompt once it has been answered here.
-          sessionId: currentSessionId ?? selectedSession?.id ?? null,
           allow: Boolean(decision?.allow),
           updatedInput: decision?.updatedInput,
           message: decision?.message,
@@ -1054,7 +1247,7 @@ export function useChatComposerState({
         previous.filter((request) => !validIds.includes(request.requestId)),
       );
     },
-    [currentSessionId, selectedSession?.id, sendMessage, setPendingPermissionRequests],
+    [sendMessage, setPendingPermissionRequests],
   );
 
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -1087,15 +1280,18 @@ export function useChatComposerState({
     selectedFileIndex,
     renderInputWithMentions,
     selectFile,
-    attachedImages,
-    setAttachedImages,
-    uploadingImages,
-    imageErrors,
+    attachedFiles,
+    setAttachedFiles,
+    uploadingFiles,
+    fileErrors,
     getRootProps,
     getInputProps,
     isDragActive,
-    openImagePicker: open,
+    openAttachmentPicker: open,
     handleSubmit,
+    queuedDraft,
+    editQueuedDraft,
+    deleteQueuedDraft,
     handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,

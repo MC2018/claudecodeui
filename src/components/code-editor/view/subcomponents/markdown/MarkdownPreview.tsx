@@ -40,9 +40,7 @@ const markdownPreviewComponents: Components = {
 };
 
 export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
-  // Single-dollar inline math mangles currency ($2,000) and shell vars; only
-  // treat `$$…$$` as math.
-  const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }] as any], []);
+  const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as any, []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
 
   return (

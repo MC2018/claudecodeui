@@ -1,16 +1,18 @@
 import { createRequire } from 'node:module';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
+import spawn from 'cross-spawn';
+
 import { appConfigDb } from '@/modules/database/index.js';
 import { providerMcpService } from '@/modules/providers/index.js';
-import { getModuleDir } from '@/utils/runtime-paths.js';
+import { getModuleDirectory } from '@/shared/utils.js';
 
 const require = createRequire(import.meta.url);
-const __dirname = getModuleDir(import.meta.url);
+const __dirname = getModuleDirectory(import.meta.url);
 const IS_PLATFORM = process.env.VITE_IS_PLATFORM === 'true';
 const MAX_SESSIONS_PER_OWNER = Number.parseInt(process.env.CLOUDCLI_BROWSER_USE_MAX_SESSIONS_PER_OWNER || '3', 10);
 const SESSION_TTL_MS = Number.parseInt(process.env.CLOUDCLI_BROWSER_USE_SESSION_TTL_MS || String(30 * 60 * 1000), 10);
@@ -148,8 +150,7 @@ function getPlaywright(): any | null {
 }
 
 function getMcpCommand(): { command: string; args: string[] } {
-  const serverDir = path.resolve(__dirname, '..', '..');
-  const mcpScriptPath = path.join(serverDir, 'browser-use-mcp.js');
+  const mcpScriptPath = path.join(__dirname, 'browser-use-mcp.js');
   if (fs.existsSync(mcpScriptPath)) {
     return {
       command: process.execPath,
@@ -270,8 +271,10 @@ function runCommand(command: string, args: string[]): Promise<void> {
     }, INSTALL_COMMAND_TIMEOUT_MS);
     timer.unref?.();
 
-    child.stdout.on('data', (chunk) => output.push(String(chunk)));
-    child.stderr.on('data', (chunk) => output.push(String(chunk)));
+    // stdio config above guarantees the pipes exist; cross-spawn's types
+    // just don't narrow them the way node's spawn overloads do.
+    child.stdout?.on('data', (chunk) => output.push(String(chunk)));
+    child.stderr?.on('data', (chunk) => output.push(String(chunk)));
     child.on('error', (error) => finish(() => reject(error)));
     child.on('close', (code) => finish(() => {
       if (code === 0) {

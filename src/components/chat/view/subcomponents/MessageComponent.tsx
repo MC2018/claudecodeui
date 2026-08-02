@@ -10,9 +10,11 @@ import type {
 } from '../../types/types';
 import { formatUsageLimitText } from '../../utils/chatFormatting';
 import type { Project } from '../../../../types/app';
-import { ToolRenderer, shouldHideToolResult } from '../../tools';
+import { ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
 
+import ChatMessageImages from './ChatMessageImages';
+import ChatMessageFiles from './ChatMessageFiles';
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
 import MessageSpeakControl from './MessageSpeakControl';
@@ -84,31 +86,41 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
     >
       {message.type === 'user' ? (
-        /* User message bubble on the right */
+        /* User turn on the right: claude.ai-style attachment cards above the bubble */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
-          <div className="group flex-1 rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:flex-initial sm:px-4">
-            <div dir="auto" className="whitespace-pre-wrap break-words font-serif text-sm">
-              {message.content}
-            </div>
+          <div className="flex min-w-0 flex-1 flex-col items-end gap-2 sm:flex-initial">
             {message.images && message.images.length > 0 && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {message.images.map((img, idx) => (
-                  <img
-                    key={img.name || idx}
-                    src={img.data}
-                    alt={img.name}
-                    className="h-auto max-w-full cursor-pointer rounded-lg transition-opacity hover:opacity-90"
-                    onClick={() => window.open(img.data, '_blank')}
-                  />
-                ))}
+              <ChatMessageImages
+                images={message.images}
+                projectId={selectedProject?.projectId}
+              />
+            )}
+            {message.files && message.files.length > 0 && (
+              <ChatMessageFiles files={message.files} />
+            )}
+            {userCopyContent.trim().length > 0 || (!message.images?.length && !message.files?.length) ? (
+              <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">
+                <div dir="auto" className="break-words font-serif text-sm">
+                  <Markdown
+                    breaks
+                    className="prose prose-sm prose-invert max-w-none font-serif [&_a]:text-blue-100 [&_a]:underline"
+                  >
+                    {message.content}
+                  </Markdown>
+                </div>
+                <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
+                  {shouldShowUserCopyControl && (
+                    <MessageCopyControl content={userCopyContent} messageType="user" />
+                  )}
+                  <span>{formattedTime}</span>
+                </div>
+              </div>
+            ) : (
+              /* Attachment-only turn: no text bubble, but the timestamp still shows */
+              <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                <span>{formattedTime}</span>
               </div>
             )}
-            <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
-              {shouldShowUserCopyControl && (
-                <MessageCopyControl content={userCopyContent} messageType="user" />
-              )}
-              <span>{formattedTime}</span>
-            </div>
           </div>
           {!isGrouped && (
             <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex">
@@ -151,9 +163,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                         ? t('messageTypes.cursor')
                         : provider === 'codex'
                           ? t('messageTypes.codex')
-                          : provider === 'gemini'
-                            ? t('messageTypes.gemini')
-                            : provider === 'opencode'
+                          : provider === 'opencode'
                               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
                               : t('messageTypes.claude'))}
               </div>
@@ -192,22 +202,12 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {/* Tool Result Section — Bash renders its output inside the command row above. */}
                 {message.toolResult && message.toolName !== 'Bash' && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
                   message.toolResult.isError ? (
-                    // Error results - red error box with content
-                    <div
-                      id={`tool-result-${message.toolId}`}
-                      className="relative mt-2 scroll-mt-4 rounded border border-red-200/60 bg-red-50/50 p-3 dark:border-red-800/40 dark:bg-red-950/10"
-                    >
-                      <div className="relative mb-2 flex items-center gap-1.5">
-                        <svg className="h-4 w-4 text-red-500 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                        <span className="text-xs font-medium text-red-700 dark:text-red-300">{t('messageTypes.error')}</span>
-                      </div>
-                      <div className="relative text-sm text-red-900 dark:text-red-100">
-                        <Markdown className="prose prose-sm prose-red max-w-none font-serif dark:prose-invert">
-                          {String(message.toolResult.content || '')}
-                        </Markdown>
-                      </div>
+                    // Error results — collapsed red row that expands to the content
+                    <div id={`tool-result-${message.toolId}`} className="scroll-mt-4">
+                      <ToolErrorDisplay
+                        label={t('messageTypes.error')}
+                        content={String(message.toolResult.content || '')}
+                      />
                     </div>
                   ) : (
                     // Non-error results - route through ToolRenderer (single source of truth)

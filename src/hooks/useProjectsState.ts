@@ -64,6 +64,28 @@ type RegisterOptimisticSessionArgs = {
   summary?: string | null;
 };
 
+/**
+ * Shape of `GET /api/providers/sessions/:sessionId` — the authoritative
+ * session → owning-project resolution used when a `/session/<id>` URL points
+ * at a session that is not present in the paginated project payloads.
+ */
+type SessionDetailsApiPayload = {
+  data?: {
+    sessionId?: string;
+    provider?: string;
+    summary?: string;
+    createdAt?: string | null;
+    lastActivity?: string | null;
+    project?: {
+      projectId?: string;
+      path?: string;
+      fullPath?: string;
+      displayName?: string;
+      isStarred?: boolean;
+    } | null;
+  };
+};
+
 type ProjectSessionPage = Pick<Project, 'sessions' | 'sessionMeta'>;
 
 const DEFAULT_PROVIDER: LLMProvider = 'claude';
@@ -267,6 +289,13 @@ const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent)
     for (const [index, session] of sessions.entries()) {
       if (index === existingIndex) {
         const updated = { ...session, ...normalizedSession };
+        // Never let a later upsert that carries an empty summary blank out a
+        // title we already have. Fresh sessions momentarily broadcast an empty
+        // custom_name before the disk indexer fills it in, which would
+        // otherwise flash the row back to the "New session" placeholder.
+        if (!normalizedSession.summary?.trim() && session.summary?.trim()) {
+          updated.summary = session.summary;
+        }
         if (serialize(session) !== serialize(updated)) {
           changed = true;
         }
@@ -364,6 +393,7 @@ export function useProjectsState({
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
+  const [attentionSessionIds, setAttentionSessionIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<AppTab>(readPersistedTab);
 
   useEffect(() => {
@@ -416,6 +446,55 @@ export function useProjectsState({
   selectedSessionRef.current = selectedSession;
   const activeSessionsRef = useRef(activeSessions);
   activeSessionsRef.current = activeSessions;
+  const selectedProjectRef = useRef(selectedProject);
+  selectedProjectRef.current = selectedProject;
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  /** URL session id whose backend lookup already ran (or is in flight) — one attempt per id. */
+  const sessionLookupRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sessionLookupRef.current = null;
+  }, [sessionId]);
+
+  const markSessionAttention = useCallback((targetSessionId?: string | null) => {
+    if (!targetSessionId) {
+      return;
+    }
+
+    const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
+    if (targetSessionId === viewedSessionId) {
+      return;
+    }
+
+    setAttentionSessionIds((previous) => {
+      if (previous.has(targetSessionId)) {
+        return previous;
+      }
+
+      const next = new Set(previous);
+      next.add(targetSessionId);
+      return next;
+    });
+  }, [sessionId]);
+
+  const clearSessionAttention = useCallback((targetSessionId?: string | null) => {
+    if (!targetSessionId) {
+      return;
+    }
+
+    setAttentionSessionIds((previous) => {
+      if (!previous.has(targetSessionId)) {
+        return previous;
+      }
+
+      const next = new Set(previous);
+      next.delete(targetSessionId);
+      return next;
+    });
+  }, []);
 
   const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
     try {
@@ -610,6 +689,9 @@ export function useProjectsState({
         return;
       }
 
+      // Ours: a session deleted on disk (or from the Claude CLI) drops out of
+      // the sidebar. Returns early, so it never reaches upstream's
+      // attention-marking below — a deleted session must not light up.
       if (event.kind === 'session_deleted') {
         const deletion = event as SessionDeletedEvent;
         if (!deletion.sessionId) {
@@ -631,6 +713,25 @@ export function useProjectsState({
         return;
       }
 
+      const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
+        ? event.sessionId
+        : null;
+      const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
+
+      if (
+        eventSessionId
+        && eventSessionId !== viewedSessionId
+        && event.kind !== 'chat_subscribed'
+        && event.kind !== 'loading_progress'
+        && event.kind !== 'session_upserted'
+        && event.kind !== 'status'
+        && event.kind !== 'stream_end'
+        && event.kind !== 'permission_cancelled'
+        && event.kind !== 'websocket_reconnected'
+      ) {
+        markSessionAttention(eventSessionId);
+      }
+
       if (event.kind !== 'session_upserted') {
         return;
       }
@@ -650,6 +751,8 @@ export function useProjectsState({
         && !activeSessionsRef.current.has(upsert.sessionId)
       ) {
         setExternalMessageUpdate((prev) => prev + 1);
+      } else {
+        markSessionAttention(upsert.sessionId);
       }
 
       setProjects((previousProjects) => {
@@ -735,7 +838,7 @@ export function useProjectsState({
     };
 
     return subscribe(handleEvent);
-  }, [navigate, sessionId, subscribe]);
+  }, [markSessionAttention, navigate, sessionId, subscribe]);
 
   useEffect(() => {
     return () => {
@@ -747,7 +850,11 @@ export function useProjectsState({
   }, []);
 
   useEffect(() => {
-    if (!sessionId || projects.length === 0) {
+    clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
+  }, [clearSessionAttention, selectedSession?.id, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) {
       return;
     }
 
@@ -770,27 +877,111 @@ export function useProjectsState({
       }
     }
 
-    // Session id is in the URL but not yet present on any project payload
-    // (normal for a brand-new conversation: the composer allocates the id and
-    // navigates before the sidebar learns about the session via
-    // `session_upserted`). Without a `selectedSession`, chat state clears
-    // `currentSessionId` and the UI stops reading the session store even
-    // though messages stream under this id — so synthesize a placeholder.
     if (selectedSession?.id === sessionId) {
       return;
     }
 
-    if (!selectedProject) {
+    // Session id is in the URL but not present on any loaded project payload.
+    // The payloads are paginated (only each project's first session page is
+    // loaded), so this is normal for deep links to older sessions. Never guess
+    // the owning project from local state — that used to bind the session to
+    // whatever project happened to be selected. Ask the backend instead; one
+    // lookup per URL id.
+    if (sessionLookupRef.current === sessionId) {
       return;
     }
+    sessionLookupRef.current = sessionId;
 
-    setSelectedSession({
-      id: sessionId,
-      __provider: readSelectedProvider(),
-      __projectId: selectedProject.projectId,
-      summary: '',
-    });
-  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
+    void (async () => {
+      let details: SessionDetailsApiPayload['data'] | null = null;
+      try {
+        const response = await api.sessionDetails(sessionId);
+        if (response.ok) {
+          const payload = (await response.json()) as SessionDetailsApiPayload;
+          details = payload.data ?? null;
+        }
+      } catch (error) {
+        console.error(`Error resolving session ${sessionId}:`, error);
+      }
+
+      // The user navigated elsewhere while the lookup was in flight.
+      if (sessionIdRef.current !== sessionId) {
+        return;
+      }
+
+      if (!details) {
+        // Unknown session id (or lookup failed). Fall back to the legacy
+        // behavior: host a placeholder under the currently selected project so
+        // chat state stays alive (without a `selectedSession`, chat clears
+        // `currentSessionId` and stops reading the session store).
+        const fallbackProject = selectedProjectRef.current;
+        if (!fallbackProject || selectedSessionRef.current?.id === sessionId) {
+          return;
+        }
+
+        setSelectedSession({
+          id: sessionId,
+          __provider: readSelectedProvider(),
+          __projectId: fallbackProject.projectId,
+          summary: '',
+        });
+        return;
+      }
+
+      // The URL carried a provider-native alias id: swap it for the canonical
+      // app-facing id and let this effect re-run against the new URL.
+      if (typeof details.sessionId === 'string' && details.sessionId && details.sessionId !== sessionId) {
+        navigate(`/session/${details.sessionId}`, { replace: true });
+        return;
+      }
+
+      const resolvedProjectId = details.project?.projectId;
+      if (resolvedProjectId) {
+        setSelectedProject((previousProject) => {
+          if (previousProject?.projectId === resolvedProjectId) {
+            return previousProject;
+          }
+
+          const loadedProject = projectsRef.current.find(
+            (candidate) => candidate.projectId === resolvedProjectId,
+          );
+          if (loadedProject) {
+            return loadedProject;
+          }
+
+          // Owning project is not in the active project list (e.g. archived):
+          // synthesize a minimal entry so the chat view still gets its paths.
+          return {
+            projectId: resolvedProjectId,
+            path: details.project?.path ?? details.project?.fullPath ?? '',
+            fullPath: details.project?.fullPath ?? details.project?.path ?? '',
+            displayName: details.project?.displayName ?? '',
+            isStarred: Boolean(details.project?.isStarred),
+            sessions: [],
+            sessionMeta: { hasMore: false, total: 0 },
+          };
+        });
+      }
+
+      const resolvedSession: ProjectSession = {
+        id: sessionId,
+        summary: details.summary ?? '',
+        createdAt: details.createdAt ?? undefined,
+        lastActivity: details.lastActivity ?? undefined,
+        __provider:
+          typeof details.provider === 'string' && details.provider.trim()
+            ? (details.provider as LLMProvider)
+            : readSelectedProvider(),
+        __projectId: resolvedProjectId,
+      };
+
+      setSelectedSession((previousSession) =>
+        previousSession?.id === sessionId
+          ? { ...previousSession, ...resolvedSession }
+          : resolvedSession,
+      );
+    })();
+  }, [navigate, sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
@@ -807,6 +998,7 @@ export function useProjectsState({
 
   const handleSessionSelect = useCallback(
     (session: ProjectSession) => {
+      clearSessionAttention(session.id);
       setSelectedSession(session);
 
       if (activeTab === 'tasks' || activeTab === 'browser') {
@@ -828,7 +1020,7 @@ export function useProjectsState({
 
       navigate(`/session/${session.id}`);
     },
-    [activeTab, isMobile, navigate, selectedProject?.projectId],
+    [activeTab, clearSessionAttention, isMobile, navigate, selectedProject?.projectId],
   );
 
   const handleNewSession = useCallback(
@@ -848,6 +1040,8 @@ export function useProjectsState({
 
   const handleSessionDelete = useCallback(
     (sessionIdToDelete: string) => {
+      clearSessionAttention(sessionIdToDelete);
+
       if (selectedSession?.id === sessionIdToDelete) {
         setSelectedSession(null);
         navigate('/');
@@ -857,7 +1051,7 @@ export function useProjectsState({
         prevProjects.map((project) => removeSessionFromProject(project, sessionIdToDelete)),
       );
     },
-    [navigate, selectedSession?.id],
+    [clearSessionAttention, navigate, selectedSession?.id],
   );
 
   const handleSidebarRefresh = useCallback(async () => {
@@ -978,6 +1172,7 @@ export function useProjectsState({
       selectedProject,
       selectedSession,
       activeSessions,
+      attentionSessionIds,
       onProjectSelect: handleProjectSelect,
       onSessionSelect: handleSessionSelect,
       onNewSession: handleNewSession,
@@ -994,6 +1189,7 @@ export function useProjectsState({
       isMobile,
     }),
     [
+      attentionSessionIds,
       handleNewSession,
       handleProjectDelete,
       handleProjectSelect,

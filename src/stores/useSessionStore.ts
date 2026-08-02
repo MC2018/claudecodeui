@@ -12,6 +12,8 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
 
+import { removeOptimisticUserEchoes } from './sessionMessageReconciliation';
+
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
 export type MessageKind =
@@ -60,7 +62,8 @@ export interface NormalizedMessage {
   isLocalCommand?: boolean;
   isLocalCommandStdout?: boolean;
   isCompactSummary?: boolean;
-  images?: string[];
+  images?: Array<{ path?: string; data?: string; name?: string }>;
+  files?: Array<{ path?: string; name?: string; mimeType?: string; size?: number }>;
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
@@ -97,6 +100,16 @@ export interface SessionSlot {
   /** @internal Cache-invalidation refs for computeMerged */
   _lastServerRef: NormalizedMessage[];
   _lastRealtimeRef: NormalizedMessage[];
+  /**
+   * @internal Monotonic ticket per server fetch (fetch/refresh/fetchMore) and
+   * the ticket of the last response applied. Concurrent fetches for the same
+   * session can resolve out of order — e.g. the `complete` refresh racing the
+   * watcher-triggered refresh right as a queued message is flushed — and a
+   * stale response applied last would wind `serverMessages` back to a
+   * transcript that no longer matches what the user already saw.
+   */
+  _fetchSeq: number;
+  _appliedFetchSeq: number;
   status: SessionStatus;
   fetchedAt: number;
   total: number;
@@ -120,6 +133,8 @@ function createEmptySlot(): SessionSlot {
     hasMore: false,
     offset: 0,
     tokenUsage: null,
+    _fetchSeq: 0,
+    _appliedFetchSeq: 0,
   };
 }
 
@@ -128,42 +143,9 @@ function createEmptySlot(): SessionSlot {
  * assistant echo (same trimmed text), so finalized stream rows do not stack
  * on top of the persisted copy before realtime is cleared.
  */
-const LOCAL_USER_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
-const LOCAL_USER_DEDUPE_CLOCK_SKEW_MS = 10_000;
-
-function userTextFingerprint(m: NormalizedMessage): string | null {
-  if (m.kind !== 'text' || m.role !== 'user') return null;
-  const t = (m.content || '').trim();
-  return t.length > 0 ? t : null;
-}
-
 function readMessageTime(m: NormalizedMessage): number | null {
   const time = Date.parse(m.timestamp);
   return Number.isFinite(time) ? time : null;
-}
-
-function hasServerEchoForLocalUser(
-  localMessage: NormalizedMessage,
-  serverMessages: NormalizedMessage[],
-): boolean {
-  const localText = userTextFingerprint(localMessage);
-  const localTime = readMessageTime(localMessage);
-  if (!localText || localTime === null) {
-    return false;
-  }
-
-  return serverMessages.some((serverMessage) => {
-    if (userTextFingerprint(serverMessage) !== localText) {
-      return false;
-    }
-
-    const serverTime = readMessageTime(serverMessage);
-    return (
-      serverTime !== null
-      && serverTime >= localTime - LOCAL_USER_DEDUPE_CLOCK_SKEW_MS
-      && serverTime - localTime <= LOCAL_USER_DEDUPE_WINDOW_MS
-    );
-  });
 }
 
 function compareMessagesChronologically(a: NormalizedMessage, b: NormalizedMessage): number {
@@ -320,13 +302,10 @@ function pruneRealtimeSupersededByServer(
   }
 
   const serverIds = new Set(serverMessages.map((message) => message.id));
+  const reconciledRealtimeMessages = removeOptimisticUserEchoes(serverMessages, realtimeMessages);
 
-  return realtimeMessages.filter((message) => {
+  return reconciledRealtimeMessages.filter((message) => {
     if (serverIds.has(message.id)) {
-      return false;
-    }
-
-    if (message.id.startsWith('local_') && hasServerEchoForLocalUser(message, serverMessages)) {
       return false;
     }
 
@@ -345,7 +324,7 @@ function pruneRealtimeSupersededByServer(
     }
 
     if (message.kind === 'text' && message.role === 'user') {
-      return !hasServerEchoForLocalUser(message, serverMessages);
+      return true;
     }
 
     if (message.kind === 'tool_use' && message.toolId) {
@@ -367,17 +346,10 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   }
 
   const serverIds = new Set(server.map((message) => message.id));
-  const extra = realtime.filter((message) => {
+  const reconciledRealtime = removeOptimisticUserEchoes(server, realtime);
+  const extra = reconciledRealtime.filter((message) => {
     if (serverIds.has(message.id)) {
       return false;
-    }
-    // Optimistic user rows use `local_*` ids; once the same text exists on the
-    // server-backed copy from the same send window, drop the realtime echo to
-    // avoid duplicate bubbles without hiding repeated prompts from history.
-    if (message.id.startsWith('local_')) {
-      if (hasServerEchoForLocalUser(message, server)) {
-        return false;
-      }
     }
     return true;
   });
@@ -459,6 +431,7 @@ export function useSessionStore() {
     } = {},
   ) => {
     const slot = getSlot(sessionId);
+    const fetchTicket = ++slot._fetchSeq;
     slot.status = 'loading';
     notify(sessionId);
 
@@ -481,6 +454,12 @@ export function useSessionStore() {
       const data = body?.data ?? body;
       const messages: NormalizedMessage[] = data.messages || [];
 
+      // A later-started fetch already applied: this response is stale.
+      if (fetchTicket <= slot._appliedFetchSeq) {
+        return slot;
+      }
+      slot._appliedFetchSeq = fetchTicket;
+
       slot.serverMessages = messages;
       slot.total = data.total ?? messages.length;
       slot.hasMore = Boolean(data.hasMore);
@@ -496,8 +475,11 @@ export function useSessionStore() {
       return slot;
     } catch (error) {
       console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
-      slot.status = 'error';
-      notify(sessionId);
+      // Don't clobber a newer fetch's result with a stale failure.
+      if (fetchTicket > slot._appliedFetchSeq) {
+        slot.status = 'error';
+        notify(sessionId);
+      }
       return slot;
     }
   }, [getSlot, notify]);
@@ -514,6 +496,7 @@ export function useSessionStore() {
     const slot = getSlot(sessionId);
     if (!slot.hasMore) return slot;
 
+    const fetchTicket = ++slot._fetchSeq;
     const params = new URLSearchParams();
     const limit = opts.limit ?? 20;
     params.append('limit', String(limit));
@@ -528,6 +511,13 @@ export function useSessionStore() {
       const body = await response.json();
       const data = body?.data ?? body;
       const olderMessages: NormalizedMessage[] = data.messages || [];
+
+      // A full fetch/refresh replaced serverMessages while this page was in
+      // flight — prepending onto the new array would duplicate or misorder.
+      if (fetchTicket <= slot._appliedFetchSeq) {
+        return slot;
+      }
+      slot._appliedFetchSeq = fetchTicket;
 
       // Prepend older messages (they're earlier in the conversation)
       slot.serverMessages = [...olderMessages, ...slot.serverMessages];
@@ -588,6 +578,7 @@ export function useSessionStore() {
     sessionId: string,
   ) => {
     const slot = getSlot(sessionId);
+    const fetchTicket = ++slot._fetchSeq;
     try {
       const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`;
       const response = await authenticatedFetch(url);
@@ -595,6 +586,14 @@ export function useSessionStore() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const body = await response.json();
       const data = body?.data ?? body;
+
+      // A later-started fetch already applied: applying this stale transcript
+      // would erase rows the user has already seen (and re-prune realtime
+      // rows against an outdated snapshot).
+      if (fetchTicket <= slot._appliedFetchSeq) {
+        return;
+      }
+      slot._appliedFetchSeq = fetchTicket;
 
       slot.serverMessages = data.messages || [];
       slot.total = data.total ?? slot.serverMessages.length;
