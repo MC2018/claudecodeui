@@ -47,6 +47,23 @@ log "Rebuilding better-sqlite3 against the service Node"
 log "Verifying the native binding under the service Node"
 "$SERVICE_NODE" -e "const D=require('$PKG/node_modules/better-sqlite3'); const db=new D(':memory:'); db.exec('create table t(x)'); db.prepare('insert into t values(1)').run(); if(db.prepare('select count(*) c from t').get().c!==1) throw new Error('sanity failed'); console.log('better-sqlite3 OK on', process.version);"
 
+# Keep the unit's ExecStart pointing at wherever the package's `bin` entry
+# actually lives. Upstream has moved it before (server/cli.js ->
+# modules/cli/cli.js); when that happens a stale ExecStart makes the service
+# fail to start after an otherwise-successful deploy.
+BIN_REL="$(node -e "process.stdout.write(require('$PKG/package.json').bin.cloudcli)")"
+BIN_ABS="$PKG/$BIN_REL"
+if [ ! -f "$BIN_ABS" ]; then
+  echo "Resolved CLI entry does not exist: $BIN_ABS" >&2
+  exit 1
+fi
+UNIT_FILE="$HOME/.config/systemd/user/$UNIT"
+if [ -f "$UNIT_FILE" ] && ! grep -qF "$BIN_ABS" "$UNIT_FILE"; then
+  log "Updating $UNIT ExecStart -> $BIN_REL"
+  sed -i "s|^ExecStart=.*|ExecStart=$SERVICE_NODE $BIN_ABS|" "$UNIT_FILE"
+  systemctl --user daemon-reload
+fi
+
 log "Restarting $UNIT"
 systemctl --user restart "$UNIT"
 
