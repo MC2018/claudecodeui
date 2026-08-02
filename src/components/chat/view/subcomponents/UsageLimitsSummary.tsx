@@ -31,7 +31,10 @@ export default function UsageLimitsSummary() {
     <div
       title={title}
       aria-label="Subscription usage limits"
-      className="inline-flex h-8 items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-2 shadow-sm"
+      // `shrink-0` keeps the bars legible, so this is hidden outright on
+      // narrow viewports rather than being squashed into the neighbouring
+      // controls. Full detail always lives in Settings > Agents > Claude.
+      className="hidden h-8 shrink-0 items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-2 shadow-sm sm:inline-flex"
     >
       {usage.limits.map((limit) => {
         const pct = Math.max(0, Math.min(100, limit.percent ?? 0));

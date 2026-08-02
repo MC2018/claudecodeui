@@ -381,7 +381,7 @@ export default function ChatComposer({
         </PromptInputBody>
 
         <PromptInputFooter>
-          <PromptInputTools className="min-w-0">
+          <PromptInputTools className="min-w-0 overflow-hidden">
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles') }}
               onClick={openAttachmentPicker}
@@ -427,7 +427,7 @@ export default function ChatComposer({
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <div
-              className={`hidden text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
+              className={`hidden text-xs text-muted-foreground/50 transition-opacity duration-200 xl:block ${
                 input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
               }`}
             >
