@@ -42,7 +42,11 @@ export default function CodeEditorSurface({
       theme={isDarkMode ? oneDark : undefined}
       height="100%"
       style={{
-        fontSize: `${fontSize}px`,
+        // Expressed in rem, not px, so the editor follows the global UI scale
+        // (which works by scaling the root font size). The stored setting is
+        // still a px number against a 16px root, so it renders at exactly that
+        // size at 100% scale.
+        fontSize: `${fontSize / 16}rem`,
         height: '100%',
       }}
       basicSetup={{
