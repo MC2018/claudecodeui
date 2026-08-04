@@ -25,6 +25,40 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
         ],
       },
     },
+    // Explicit current-generation ids. Upstream only ships the bare aliases
+    // ('opus', 'sonnet'), which resolve to the previous generation — verified
+    // against the transcripts on this machine, where 'opus' records as
+    // claude-opus-4-8. Pinning the full id is the only way to actually select
+    // Opus 5 from the picker.
+    {
+      value: 'claude-opus-5',
+      label: 'Opus 5',
+      description: 'Opus 5 · Current generation · Best for complex work',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'claude-sonnet-5',
+      label: 'Sonnet 5',
+      description: 'Sonnet 5 · Current generation · Everyday tasks',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'max' },
+        ],
+      },
+    },
     {
       value: 'fable',
       label: 'Fable',
@@ -104,13 +138,12 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
       description: 'Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok',
     },
   ],
-  // Fork preference: pre-select Opus rather than the Claude Code default.
-  // `opus` is an alias the CLI resolves to the current Opus generation (the
-  // option labels below are upstream's and lag the model line). Upstream ships
-  // 'default' here; we changed it because the default plus an accidental Fable
-  // selection was burning subscription limits unnoticed — Fable is documented
-  // right in this catalog as using limits about twice as fast as Opus.
-  DEFAULT: 'opus',
+  // Fork preference: pre-select Opus 5 by explicit id rather than the Claude
+  // Code default. Upstream ships 'default' here; we changed it because that
+  // plus an accidental Fable selection was burning subscription limits
+  // unnoticed — Fable is documented right in this catalog as using limits
+  // about twice as fast as Opus.
+  DEFAULT: 'claude-opus-5',
 };
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
