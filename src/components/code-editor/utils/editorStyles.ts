@@ -52,6 +52,24 @@ export const getEditorStyles = (isDarkMode: boolean) => {
       font-size: 12px;
     }
 
+    /* Short viewports (phone landscape): this bar and the header together were
+       taking roughly a third of the screen. Tighten it so more of the height
+       goes to code. Keyed on height alone on purpose — it is about vertical
+       room, and unlike a layout switch there is nothing here that misbehaves
+       when the on-screen keyboard makes a portrait viewport short. */
+    @media (max-height: 600px) {
+      .cm-editor-toolbar-panel {
+        padding: 1px 8px;
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .cm-diff-nav-btn,
+      .cm-toolbar-btn {
+        padding: 1px;
+      }
+    }
+
     .cm-diff-nav-btn,
     .cm-toolbar-btn {
       padding: 3px;

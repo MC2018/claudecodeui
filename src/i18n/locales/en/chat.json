@@ -136,7 +136,8 @@
       "willSend": "Will send when this finishes",
       "edit": "Edit queued message",
       "delete": "Delete queued message"
-    }
+    },
+    "refreshMessages": "Refresh messages"
   },
   "composer": {
     "reasoning": "Reasoning",

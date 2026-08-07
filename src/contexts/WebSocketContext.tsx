@@ -173,6 +173,48 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     }
   }, [dispatch, isAuthLoading, token, user]); // reconnect with current authentication state
 
+  /**
+   * Recover state when the app comes back to the foreground.
+   *
+   * Mobile browsers freeze backgrounded tabs, and the socket is usually torn
+   * down without a timely `close` event — so `onclose` never runs, no
+   * reconnect is scheduled, and nothing tells the app to catch up. Returning
+   * to it left the chat showing whatever it knew when it was frozen: most
+   * visibly, a run that finished while away would read as complete with its
+   * text missing, and only a full app restart fixed it.
+   *
+   * On becoming visible, reconnect immediately when the socket is not open
+   * (rather than waiting out the reconnect backoff), and signal a catch-up
+   * either way — a socket can still report OPEN while being a dead handle
+   * after a freeze. Consumers treat the signal as "reconcile against the
+   * server", which is idempotent, so an unnecessary one is harmless.
+   */
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
+        connect();
+      }
+
+      dispatch({ kind: 'websocket_reconnected', timestamp: Date.now() });
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [connect, dispatch]);
+
   const sendMessage = useCallback((message: unknown) => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {

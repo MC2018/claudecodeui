@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, RefreshCwIcon } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -80,6 +80,8 @@ interface ChatComposerProps {
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
   onToggleCommandMenu: () => void;
+  /** Re-fetch this session from the server and re-subscribe. */
+  onRefreshMessages?: () => void;
   hasInput: boolean;
   onClearInput: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
@@ -144,6 +146,7 @@ export default function ChatComposer({
   onShowTokenUsage,
   slashCommandsCount,
   onToggleCommandMenu,
+  onRefreshMessages,
   hasInput,
   onClearInput,
   onSubmit,
@@ -404,6 +407,16 @@ export default function ChatComposer({
                 </span>
               )}
             </PromptInputButton>
+
+            {onRefreshMessages && (
+              <PromptInputButton
+                tooltip={{ content: t('input.refreshMessages', { defaultValue: 'Refresh messages' }) }}
+                onClick={onRefreshMessages}
+                aria-label={t('input.refreshMessages', { defaultValue: 'Refresh messages' })}
+              >
+                <RefreshCwIcon />
+              </PromptInputButton>
+            )}
 
             {hasInput && (
               <PromptInputButton

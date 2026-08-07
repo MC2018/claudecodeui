@@ -55,7 +55,7 @@ export default function CodeEditorHeader({
   const saveTitle = saveSuccess ? labels.saved : saving ? labels.saving : labels.save;
 
   return (
-    <div className="flex min-w-0 flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+    <div className="flex min-w-0 flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5 [@media(max-height:600px)]:py-0.5">
       {/* File info - can shrink */}
       <div className="flex min-w-0 flex-1 shrink items-center gap-2">
         <div className="min-w-0 shrink">
@@ -67,7 +67,16 @@ export default function CodeEditorHeader({
               </span>
             )}
           </div>
-          <p className="truncate text-xs text-gray-500 dark:text-gray-400">{file.path}</p>
+          {/* Second line of the header. Hidden on short viewports (phone
+              landscape) where the filename above already identifies the file
+              and the row is worth more as code. `title` keeps the full path
+              reachable on hover/long-press. */}
+          <p
+            title={file.path}
+            className="hidden truncate text-xs text-gray-500 dark:text-gray-400 [@media(min-height:600px)]:block"
+          >
+            {file.path}
+          </p>
         </div>
       </div>
 
